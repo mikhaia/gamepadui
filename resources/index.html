@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>GamePad UI</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body data-theme="light" data-accent="plum">
+    <svg class="icon-sprite" aria-hidden="true">
+      <symbol id="icon-gamepad" viewBox="0 0 24 24"><path d="M6.5 7h11a4.5 4.5 0 0 1 4.3 5.8l-1.1 3.6a2.6 2.6 0 0 1-4.2 1.2l-1.8-1.5H9.3l-1.8 1.5a2.6 2.6 0 0 1-4.2-1.2l-1.1-3.6A4.5 4.5 0 0 1 6.5 7Z"/><path d="M7 10v4M5 12h4M16.5 11.2h.01M18.5 13.2h.01"/></symbol>
+      <symbol id="icon-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-2.9-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></symbol>
+      <symbol id="icon-library" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></symbol>
+      <symbol id="icon-folder" viewBox="0 0 24 24"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5H10l2 2h6.5A2.5 2.5 0 0 1 21 9.5v7a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 16.5v-9Z"/></symbol>
+      <symbol id="icon-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m16.2 16.2 4.3 4.3"/></symbol>
+      <symbol id="icon-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="icon-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+      <symbol id="icon-close" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17"/></symbol>
+      <symbol id="icon-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6v-.2h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z"/></symbol>
+      <symbol id="icon-moon" viewBox="0 0 24 24"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4 8.5 8.5 0 1 0 20 15.5Z"/></symbol>
+      <symbol id="icon-restart" viewBox="0 0 24 24"><path d="M20 7v5h-5M19 12a7 7 0 1 0-2 5"/></symbol>
+      <symbol id="icon-power" viewBox="0 0 24 24"><path d="M12 3v9M6.6 6.6a8 8 0 1 0 10.8 0"/></symbol>
+      <symbol id="icon-exit" viewBox="0 0 24 24"><path d="M10 5V3H4v18h6v-2M14 8l4 4-4 4M8 12h10"/></symbol>
+      <symbol id="icon-play" viewBox="0 0 24 24"><path d="m9 6 9 6-9 6V6Z"/></symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+      <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M13.5 6.5 17.5 10.5M4 20l4.5-1 10-10a2.8 2.8 0 0 0-4-4l-10 10L4 20Z"/></symbol>
+      <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></symbol>
+      <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></symbol>
+    </svg>
+    <div class="background" aria-hidden="true">
+      <div class="background__image" id="background-image"></div>
+      <div class="background__wash" id="background-wash"></div>
+      <div class="background__glow background__glow--one"></div>
+      <div class="background__glow background__glow--two"></div>
+    </div>
+
+    <main class="app-shell" id="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand__mark" aria-hidden="true"><svg class="icon"><use href="#icon-gamepad"></use></svg></div>
+          <div>
+            <p class="eyebrow">FULLSCREEN LAUNCHER</p>
+            <h1>GamePad <span>UI</span></h1>
+          </div>
+        </div>
+
+        <div class="status-area">
+          <div class="input-status" id="input-status">
+            <span class="input-status__dot"></span>
+            <span id="input-status-text">Клавиатура</span>
+          </div>
+          <div class="clock" aria-live="polite">
+            <time class="clock__time" id="clock-time">--:--</time>
+            <time class="clock__date" id="clock-date">Загрузка…</time>
+          </div>
+        </div>
+      </header>
+
+      <nav class="section-tabs" aria-label="Основные разделы" id="section-tabs">
+        <button class="section-tab is-active" data-section="favorites" data-focusable>
+          <svg class="section-tab__icon icon"><use href="#icon-star"></use></svg>
+          Избранное
+        </button>
+        <button class="section-tab" data-section="library" data-focusable>
+          <svg class="section-tab__icon icon"><use href="#icon-library"></use></svg>
+          Библиотека
+        </button>
+        <button class="section-tab" data-section="explorer" data-focusable>
+          <svg class="section-tab__icon icon"><use href="#icon-folder"></use></svg>
+          Проводник
+        </button>
+        <button class="section-tab" data-section="search" data-focusable>
+          <svg class="section-tab__icon icon"><use href="#icon-search"></use></svg>
+          Поиск
+        </button>
+      </nav>
+
+      <div class="content-frame">
+        <section class="view is-active" data-view="favorites" aria-labelledby="favorites-title">
+          <div class="view-heading">
+            <div>
+              <p class="eyebrow">БЫСТРЫЙ ДОСТУП</p>
+              <h2 id="favorites-title">Избранное</h2>
+            </div>
+            <button class="action-button action-button--primary" data-action="add-item" data-focusable>
+              <svg class="icon"><use href="#icon-plus"></use></svg> Добавить игру
+            </button>
+          </div>
+          <div class="card-grid" id="favorites-grid"></div>
+        </section>
+
+        <section class="view" data-view="library" aria-labelledby="library-title" hidden>
+          <div class="view-heading">
+            <div>
+              <p class="eyebrow">ВАША КОЛЛЕКЦИЯ</p>
+              <h2 id="library-title">Библиотека</h2>
+            </div>
+            <button class="action-button action-button--primary" data-action="add-item" data-focusable>
+              <svg class="icon"><use href="#icon-plus"></use></svg> Добавить приложение
+            </button>
+          </div>
+          <div class="card-grid" id="library-grid"></div>
+        </section>
+
+        <section class="view" data-view="explorer" aria-labelledby="explorer-title" hidden>
+          <div class="view-heading view-heading--explorer">
+            <div>
+              <p class="eyebrow">ФАЙЛОВАЯ СИСТЕМА</p>
+              <h2 id="explorer-title">Проводник</h2>
+            </div>
+            <button class="action-button" data-action="choose-folder" data-focusable>
+              <svg class="icon"><use href="#icon-folder"></use></svg> Выбрать папку
+            </button>
+          </div>
+          <div class="explorer-toolbar">
+            <div class="path-bar">
+              <button class="icon-button" data-action="explorer-up" data-focusable aria-label="На уровень выше"><svg class="icon"><use href="#icon-arrow-left"></use></svg></button>
+              <div class="path-bar__value" id="explorer-path">—</div>
+              <div class="path-bar__count" id="explorer-count" aria-live="polite"></div>
+            </div>
+            <label class="explorer-filter">
+              <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+              <input type="search" id="explorer-filter" placeholder="Поиск в папке" autocomplete="off" spellcheck="false" data-focusable aria-label="Фильтр файлов текущей папки">
+            </label>
+          </div>
+          <div class="file-grid" id="explorer-grid"></div>
+        </section>
+
+        <section class="view search-view" data-view="search" aria-labelledby="search-title" hidden>
+          <div class="view-heading">
+            <div>
+              <p class="eyebrow">РУЧНОЙ ПОИСК</p>
+              <h2 id="search-title">Поиск</h2>
+            </div>
+            <button class="action-button" data-action="open-search-settings" data-focusable>
+              <svg class="icon"><use href="#icon-folder"></use></svg> Папки поиска
+            </button>
+          </div>
+          <label class="library-search">
+            <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+            <input type="search" id="library-search-input" placeholder="Название игры или приложения" autocomplete="off" spellcheck="false" data-focusable aria-label="Поиск файлов в выбранных папках">
+            <span>МИН. 3 СИМВОЛА</span>
+          </label>
+          <div class="library-search__meta">
+            <span id="library-search-scope">Папки поиска не выбраны</span>
+            <span id="library-search-summary" aria-live="polite"></span>
+          </div>
+          <div class="search-results-grid" id="library-search-results"></div>
+        </section>
+      </div>
+
+      <footer class="control-hints" id="control-hints"></footer>
+    </main>
+
+    <div class="scrim" id="system-scrim" hidden></div>
+    <aside class="system-panel" id="system-panel" aria-label="Системное меню" aria-hidden="true">
+      <div class="system-panel__header">
+        <div>
+          <p class="eyebrow">GAMEPAD UI</p>
+          <h2>Системное меню</h2>
+        </div>
+        <button class="icon-button" data-action="close-system-menu" data-focusable aria-label="Закрыть"><svg class="icon"><use href="#icon-close"></use></svg></button>
+      </div>
+      <div class="system-panel__items">
+        <button class="system-item" data-action="open-settings" data-focusable>
+          <span class="system-item__icon"><svg class="icon"><use href="#icon-settings"></use></svg></span>
+          <span><b>Настройки</b><small>Фон, поиск и интерфейс</small></span>
+          <i><svg class="icon"><use href="#icon-chevron"></use></svg></i>
+        </button>
+        <button class="system-item" data-system-command="sleep" data-focusable>
+          <span class="system-item__icon"><svg class="icon"><use href="#icon-moon"></use></svg></span>
+          <span><b>Спящий режим</b><small>Приостановить систему</small></span>
+          <i><svg class="icon"><use href="#icon-chevron"></use></svg></i>
+        </button>
+        <div class="system-panel__separator"></div>
+        <button class="system-item" data-system-command="restart" data-focusable>
+          <span class="system-item__icon"><svg class="icon"><use href="#icon-restart"></use></svg></span>
+          <span><b>Перезагрузка</b><small>Требует подтверждения</small></span>
+          <i><svg class="icon"><use href="#icon-chevron"></use></svg></i>
+        </button>
+        <button class="system-item system-item--danger" data-system-command="shutdown" data-focusable>
+          <span class="system-item__icon"><svg class="icon"><use href="#icon-power"></use></svg></span>
+          <span><b>Выключение</b><small>Требует подтверждения</small></span>
+          <i><svg class="icon"><use href="#icon-chevron"></use></svg></i>
+        </button>
+        <div class="system-panel__separator"></div>
+        <button class="system-item" data-action="exit-application" data-focusable>
+          <span class="system-item__icon"><svg class="icon"><use href="#icon-exit"></use></svg></span>
+          <span><b>Выйти из приложения</b><small>Закрыть GamePad UI</small></span>
+          <i><svg class="icon"><use href="#icon-chevron"></use></svg></i>
+        </button>
+      </div>
+      <p class="system-panel__tip"><kbd>B</kbd> или <kbd>Esc</kbd>, чтобы закрыть</p>
+    </aside>
+
+    <div class="modal-layer" id="modal-layer" hidden>
+      <div class="modal-scrim" data-action="close-modal"></div>
+      <section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal__header">
+          <div>
+            <p class="eyebrow" id="modal-eyebrow">GAMEPAD UI</p>
+            <h2 id="modal-title">Окно</h2>
+          </div>
+          <button class="icon-button" data-action="close-modal" data-focusable aria-label="Закрыть"><svg class="icon"><use href="#icon-close"></use></svg></button>
+        </div>
+        <div class="modal__body" id="modal-body"></div>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="/js/neutralino.js"></script>
+    <script src="/js/model.js"></script>
+    <script src="/js/search.js"></script>
+    <script src="/js/platform.js"></script>
+    <script src="/js/navigation.js"></script>
+    <script src="/js/main.js"></script>
+  </body>
+</html>
