@@ -85,9 +85,10 @@
 
   function joinPath(base, entry, osName) {
     const separator = osName === "Windows" ? "\\" : "/";
-    const cleanBase = String(base || "").replace(/[\\/]+$/, "");
+    const basePath = String(base || "");
+    const cleanBase = basePath.replace(/[\\/]+$/, "");
     const cleanEntry = String(entry || "").replace(/^[\\/]+/, "");
-    if (!cleanBase) return cleanEntry;
+    if (!cleanBase) return /^[\\/]/.test(basePath) ? `${separator}${cleanEntry}` : cleanEntry;
     return `${cleanBase}${separator}${cleanEntry}`;
   }
 

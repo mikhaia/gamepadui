@@ -33,6 +33,7 @@
   let activeSection = "favorites";
   let explorerPath = "";
   let explorerEntries = [];
+  let explorerReadError = false;
   let explorerFilter = "";
   let directorySearchQuery = "";
   let directorySearchMode = "idle";
@@ -301,15 +302,17 @@
     const directory = item.type === "DIRECTORY" && !applicationBundle;
     const launchable = Model.isLaunchableEntry(item.entry, item.type, getOsName());
     const selected = selectedExplorerPath === path ? " is-selected" : "";
-    const extension = Model.extensionOf(item.entry).toUpperCase() || "FILE";
+    const extension = Model.extensionOf(item.entry).toUpperCase();
+    const typeLabel = directory ? "Папка" : applicationBundle ? "Приложение" : extension || "Файл";
     return `
-      <button class="file-card${selected}" data-entry-name="${escapeHtml(item.entry)}" data-entry-type="${item.type}" data-entry-path="${escapeHtml(path)}" data-focusable>
-        <span class="file-card__visual ${directory ? "is-folder" : "is-file"}${applicationBundle ? " is-application" : ""}">
-          ${directory ? icon("folder") : `<span class="file-card__type">${escapeHtml(extension.slice(0, 5))}</span>`}
-          <span class="file-card__corner">${directory ? "ПАПКА" : applicationBundle ? "ПРИЛОЖЕНИЕ" : escapeHtml(extension)}</span>
+      <button class="file-card${selected}" title="${escapeHtml(item.entry)}" data-entry-name="${escapeHtml(item.entry)}" data-entry-type="${item.type}" data-entry-path="${escapeHtml(path)}" data-focusable>
+        <span class="file-card__visual ${directory ? "is-folder" : "is-file"}${applicationBundle ? " is-application" : ""}" aria-hidden="true">
+          ${icon(directory ? "folder" : "file")}
         </span>
-        <span class="file-card__name">${escapeHtml(item.entry)}</span>
-        ${launchable ? '<span class="file-card__badge">Можно добавить</span>' : ""}
+        <span class="file-card__info">
+          <span class="file-card__name">${escapeHtml(item.entry)}</span>
+          <span class="file-card__detail">${escapeHtml(typeLabel)}${launchable ? '<span class="file-card__detail-separator" aria-hidden="true">·</span>Можно добавить' : ""}</span>
+        </span>
       </button>`;
   }
 
@@ -318,12 +321,14 @@
     const filtering = Boolean(explorerFilter.trim());
     elements["explorer-path"].textContent = explorerPath || "Выберите папку";
     elements["explorer-filter"].value = explorerFilter;
-    elements["explorer-count"].textContent = filtering
+    elements["explorer-count"].textContent = explorerReadError ? "" : filtering
       ? `${visibleEntries.length} из ${explorerEntries.length}`
       : explorerEntries.length
         ? `${explorerEntries.length} ${pluralize(explorerEntries.length, ["элемент", "элемента", "элементов"])}`
       : "";
-    elements["explorer-grid"].innerHTML = visibleEntries.length
+    elements["explorer-grid"].innerHTML = explorerReadError
+      ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("folder")}</div><h3>Не удалось открыть папку</h3><p>Проверьте доступ к папке и попробуйте снова.</p></div>`
+      : visibleEntries.length
       ? visibleEntries.map(fileEntryMarkup).join("")
       : filtering && explorerEntries.length
         ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("search")}</div><h3>Ничего не найдено</h3><p>Попробуйте изменить запрос для этой папки.</p></div>`
@@ -343,6 +348,7 @@
     explorerPath = path;
     explorerFilter = "";
     selectedExplorerPath = "";
+    explorerReadError = false;
     elements["explorer-path"].textContent = path;
     elements["explorer-grid"].innerHTML = '<div class="loading-state"><span></span><p>Читаю папку…</p></div>';
     try {
@@ -359,6 +365,7 @@
       requestAnimationFrame(() => Navigation.ensureFocus());
     } catch (error) {
       explorerEntries = [];
+      explorerReadError = true;
       renderExplorer();
       showToast("Не удалось открыть папку", "error");
       console.error(error);

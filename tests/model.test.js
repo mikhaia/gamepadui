@@ -71,6 +71,8 @@ test("joins and ascends Windows and Unix paths", () => {
   assert.equal(model.parentPath("C:\\Games\\Hades", "Windows"), "C:\\Games");
   assert.equal(model.parentPath("C:\\", "Windows"), "C:\\");
   assert.equal(model.joinPath("/home/player", "Games", "Linux"), "/home/player/Games");
+  assert.equal(model.joinPath("/", "Applications", "Darwin"), "/Applications");
+  assert.equal(model.joinPath("/", "usr", "Linux"), "/usr");
   assert.equal(model.parentPath("/home/player/Games", "Linux"), "/home/player");
   assert.equal(model.parentPath("/", "Linux"), "/");
 });
