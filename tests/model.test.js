@@ -76,3 +76,40 @@ test("joins and ascends Windows and Unix paths", () => {
   assert.equal(model.parentPath("/home/player/Games", "Linux"), "/home/player");
   assert.equal(model.parentPath("/", "Linux"), "/");
 });
+
+const LIBRARY = [
+  { id: "a", favorite: true },
+  { id: "b", favorite: false },
+  { id: "c", favorite: true },
+  { id: "d", favorite: true },
+  { id: "e", favorite: true }
+];
+const ids = (items) => items.map((item) => item.id);
+
+test("orders favorites by the saved order and appends new favorites in library order", () => {
+  assert.deepEqual(ids(model.orderFavorites(LIBRARY, [])), ["a", "c", "d", "e"]);
+  assert.deepEqual(ids(model.orderFavorites(LIBRARY, ["d", "a"])), ["d", "a", "c", "e"]);
+  assert.deepEqual(ids(model.orderFavorites(LIBRARY, ["b", "zzz", "e"])), ["e", "a", "c", "d"], "non-favorites and unknown ids are ignored");
+});
+
+test("moves a favorite first, previous, next and last", () => {
+  const order = ["a", "c", "d", "e"];
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "d", "first"), ["d", "a", "c", "e"]);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "d", "previous"), ["a", "d", "c", "e"]);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "d", "next"), ["a", "c", "e", "d"]);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "c", "last"), ["a", "d", "e", "c"]);
+});
+
+test("keeps the order unchanged at the edges and for unknown items", () => {
+  const order = ["a", "c", "d", "e"];
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "a", "previous"), order);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "a", "first"), order);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "e", "next"), order);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "b", "first"), order);
+  assert.deepEqual(model.moveFavorite(LIBRARY, order, "c", "sideways"), order);
+});
+
+test("reports the position of a favorite", () => {
+  assert.deepEqual(model.favoritePosition(LIBRARY, ["d"], "d"), { index: 0, total: 4 });
+  assert.deepEqual(model.favoritePosition(LIBRARY, [], "b"), { index: -1, total: 4 });
+});

@@ -8,7 +8,8 @@
     3: "search",
     4: "previous-section",
     5: "next-section",
-    8: "menu",
+    8: "apps",
+    9: "menu",
     12: "up",
     13: "down",
     14: "left",
@@ -29,17 +30,19 @@
 
   function visibleFocusableElements() {
     const modal = document.getElementById("modal-layer");
-    const panel = document.getElementById("system-panel");
+    const panel = ["system-panel", "apps-panel"]
+      .map((id) => document.getElementById(id))
+      .find((element) => element?.classList.contains("is-open"));
     let root = document;
     if (modal && !modal.hidden) root = document.getElementById("modal");
-    else if (panel?.classList.contains("is-open")) root = panel;
+    else if (panel) root = panel;
 
     return [...root.querySelectorAll("[data-focusable]")].filter((element) => {
       const style = globalScope.getComputedStyle(element);
       const rect = element.getBoundingClientRect();
       const hiddenByParent = element.closest('[aria-hidden="true"], [hidden]');
       const onScreen = rect.right > 0 && rect.bottom > 0 && rect.left < globalScope.innerWidth && rect.top < globalScope.innerHeight;
-      const canScrollIntoView = root.id === "modal";
+      const canScrollIntoView = root !== document;
       return !element.disabled && !element.hidden && !hiddenByParent && (onScreen || canScrollIntoView) && rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
     });
   }
@@ -51,19 +54,21 @@
     element.classList.add("is-focused");
     if (typeof element.focus === "function") element.focus({ preventScroll: true });
     if (options.scroll !== false) element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-    element.dispatchEvent(new CustomEvent("gamepad-focus", { bubbles: true }));
+    element.dispatchEvent(new CustomEvent("gamepad-focus", { bubbles: true, detail: { source: options.source || "program" } }));
   }
 
   function ensureFocus() {
     const elements = visibleFocusableElements();
-    if (!elements.includes(activeElement)) setFocus(elements[0], { scroll: false });
+    if (elements.includes(activeElement)) return;
+    // Элементы с data-autofocus-skip (например, кнопка сайдбара) не получают фокус автоматически.
+    setFocus(elements.find((element) => !element.hasAttribute("data-autofocus-skip")) || elements[0], { scroll: false });
   }
 
   function move(direction) {
     const elements = visibleFocusableElements();
     if (!elements.length) return;
     if (!elements.includes(activeElement)) {
-      setFocus(elements[0]);
+      setFocus(elements[0], { source: "move" });
       return;
     }
 
@@ -89,7 +94,7 @@
       }
     }
 
-    if (best) setFocus(best);
+    if (best) setFocus(best, { source: "move" });
   }
 
   function dispatch(action) {
@@ -112,6 +117,14 @@
   }
 
   function onKeyDown(event) {
+    if (event.code === "Space" && event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey) {
+      event.preventDefault();
+      if (event.repeat) return;
+      handleAction("apps");
+      document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "keyboard" } }));
+      return;
+    }
+
     if (isTypingTarget(event.target)) {
       if (event.key === "Escape") {
         event.preventDefault();

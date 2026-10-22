@@ -60,7 +60,7 @@ Search results can then be manually added to Library or Favorites.
 
 ## System Menu
 
-The system menu opens with the **Select / View** button and appears as an overlay or side panel.
+The system menu opens with the **Menu** (≡) button and appears as an overlay or side panel.
 
 Items:
 
@@ -82,7 +82,8 @@ B                   Back
 X                   Options / Actions
 Y                   Search
 LB / RB             Change section
-Select / View       System menu
+Select / View       Applications sidebar
+Menu                System menu
 ```
 
 Keyboard and mouse should remain available as alternative input methods.

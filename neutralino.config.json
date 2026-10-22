@@ -17,6 +17,7 @@
     "app.exit",
     "window.*",
     "os.getPath",
+    "os.getEnv",
     "os.showOpenDialog",
     "os.showFolderDialog",
     "os.showMessageBox",

@@ -93,6 +93,28 @@
     return `${shellQuote(path)}${argumentSuffix}`;
   }
 
+  // Открыть файл программой, назначенной в системе (PDF — в просмотрщике, картинку — в галерее и т. д.).
+  function buildOpenCommand(path, osName) {
+    const target = String(path || "").trim();
+    if (!target) throw new Error("Не указан путь к файлу");
+    if (osName === "Windows") return buildLaunchCommand({ path: target }, osName);
+    if (osName === "Darwin") return `open ${shellQuote(target)}`;
+    return `xdg-open ${shellQuote(target)}`;
+  }
+
+  // Показать файл в системном файловом менеджере: Finder или Проводник Windows откроют папку и выделят файл.
+  function buildRevealCommand(path, osName) {
+    const target = String(path || "").trim().replace(/[\\/]+$/, "");
+    if (!target) throw new Error("Не указан путь к файлу");
+    if (osName === "Windows") {
+      const script = `Start-Process -FilePath 'explorer.exe' -ArgumentList ${powerShellLiteral(`/select,"${target}"`)}`;
+      return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(script)}`;
+    }
+    if (osName === "Darwin") return `open -R ${shellQuote(target)}`;
+    // В Linux нет общего способа выделить файл, поэтому открываем его папку.
+    return `xdg-open ${shellQuote(parentDirectory(target) || "/")}`;
+  }
+
   function buildSystemCommand(action, osName) {
     const commands = {
       Windows: {
@@ -116,6 +138,8 @@
 
   const api = {
     buildLaunchCommand,
+    buildOpenCommand,
+    buildRevealCommand,
     buildSystemCommand,
     encodePowerShell,
     shellQuote,

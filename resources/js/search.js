@@ -27,6 +27,7 @@
       readDirectory,
       joinPath,
       isLaunchableEntry,
+      includeAllFiles = false,
       shouldCancel = () => false,
       resultLimit = DEFAULT_RESULT_LIMIT,
       directoryLimit = DEFAULT_DIRECTORY_LIMIT,
@@ -80,11 +81,14 @@
       for (const { directory, entries } of batchEntries) {
         for (const entry of entries || []) {
           if (shouldCancel()) break;
+          // Скрытые файлы и папки (.git, .DS_Store и т. п.) только засоряют выдачу и тратят лимит папок.
+          if (!entry?.entry || String(entry.entry).startsWith(".")) continue;
           const path = joinPath(directory, entry.entry, osName);
-          if (isLaunchableEntry(entry.entry, entry.type, osName)) {
+          const launchable = isLaunchableEntry(entry.entry, entry.type, osName);
+          if (launchable || (includeAllFiles && entry.type === "FILE")) {
             if (matchesSearchPath(entry.entry, query) && !resultPaths.has(path) && results.length < resultLimit) {
               resultPaths.add(path);
-              results.push({ name: entry.entry, path, type: entry.type });
+              results.push({ name: entry.entry, path, type: entry.type, launchable });
             }
             if (results.length >= resultLimit) {
               resultLimitReached = true;
@@ -98,7 +102,9 @@
       }
     }
     const cancelled = shouldCancel();
-    results.sort((left, right) => left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" }) || left.path.localeCompare(right.path));
+    results.sort((left, right) => Number(right.launchable) - Number(left.launchable)
+      || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" })
+      || left.path.localeCompare(right.path));
 
     return {
       results,

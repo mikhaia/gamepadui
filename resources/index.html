@@ -27,6 +27,10 @@
       <symbol id="icon-edit" viewBox="0 0 24 24"><path d="M13.5 6.5 17.5 10.5M4 20l4.5-1 10-10a2.8 2.8 0 0 0-4-4l-10 10L4 20Z"/></symbol>
       <symbol id="icon-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/></symbol>
       <symbol id="icon-menu" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/></symbol>
+      <symbol id="icon-view" viewBox="0 0 24 24"><rect x="3" y="8.5" width="12" height="10" rx="2"/><path d="M9 8.5V7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-4"/></symbol>
+      <symbol id="icon-reorder" viewBox="0 0 24 24"><path d="M8 20V4M4.5 7.5 8 4l3.5 3.5M16 4v16M12.5 16.5 16 20l3.5-3.5"/></symbol>
+      <symbol id="icon-to-start" viewBox="0 0 24 24"><path d="M6 5v14M17 18l-6-6 6-6"/></symbol>
+      <symbol id="icon-to-end" viewBox="0 0 24 24"><path d="M18 5v14M7 18l6-6-6-6"/></symbol>
       <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></symbol>
     </svg>
     <div class="background" aria-hidden="true">
@@ -39,6 +43,9 @@
     <main class="app-shell" id="app-shell">
       <header class="topbar">
         <div class="brand">
+          <button class="icon-button apps-toggle" id="apps-toggle" data-action="toggle-apps-panel" data-focusable data-autofocus-skip aria-label="Приложения" aria-controls="apps-panel" aria-expanded="false" title="Приложения (Ctrl+Пробел)">
+            <svg class="icon"><use href="#icon-menu"></use></svg>
+          </button>
           <div class="brand__mark" aria-hidden="true"><svg class="icon"><use href="#icon-gamepad"></use></svg></div>
           <div>
             <p class="eyebrow">FULLSCREEN LAUNCHER</p>
@@ -144,10 +151,14 @@
             <span>МИН. 3 СИМВОЛА</span>
           </label>
           <div class="library-search__meta">
+            <div class="search-scope" role="radiogroup" aria-label="Что искать">
+              <button type="button" class="search-scope__option is-active" data-action="set-search-scope" data-scope="apps" role="radio" aria-checked="true" data-focusable>Приложения</button>
+              <button type="button" class="search-scope__option" data-action="set-search-scope" data-scope="all" role="radio" aria-checked="false" data-focusable>Все файлы</button>
+            </div>
             <span id="library-search-scope">Папки поиска не выбраны</span>
             <span id="library-search-summary" aria-live="polite"></span>
           </div>
-          <div class="search-results-grid" id="library-search-results"></div>
+          <div class="search-results-list" id="library-search-results"></div>
         </section>
       </div>
 
@@ -195,6 +206,27 @@
       <p class="system-panel__tip"><kbd>B</kbd> или <kbd>Esc</kbd>, чтобы закрыть</p>
     </aside>
 
+    <div class="scrim" id="apps-scrim" hidden></div>
+    <aside class="apps-panel" id="apps-panel" aria-label="Приложения" aria-hidden="true">
+      <div class="apps-panel__header">
+        <div>
+          <p class="eyebrow" id="apps-eyebrow">ПРИЛОЖЕНИЯ</p>
+          <h2>Приложения</h2>
+        </div>
+        <div class="apps-panel__actions">
+          <button class="icon-button" data-action="refresh-apps" data-focusable aria-label="Обновить список" title="Обновить список"><svg class="icon"><use href="#icon-restart"></use></svg></button>
+          <button class="icon-button" data-action="close-apps-panel" data-focusable aria-label="Закрыть"><svg class="icon"><use href="#icon-close"></use></svg></button>
+        </div>
+      </div>
+      <label class="explorer-filter apps-filter">
+        <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
+        <input type="search" id="apps-filter" placeholder="Найти приложение" autocomplete="off" spellcheck="false" data-focusable aria-label="Фильтр приложений">
+      </label>
+      <div class="apps-panel__meta" id="apps-meta" aria-live="polite"></div>
+      <div class="apps-list" id="apps-list"></div>
+      <p class="apps-panel__tip"><kbd>X</kbd> или ПКМ — избранное · <kbd>B</kbd> или <kbd>Esc</kbd> — закрыть</p>
+    </aside>
+
     <div class="modal-layer" id="modal-layer" hidden>
       <div class="modal-scrim" data-action="close-modal"></div>
       <section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
@@ -214,8 +246,11 @@
     <script src="/js/neutralino.js"></script>
     <script src="/js/model.js"></script>
     <script src="/js/search.js"></script>
+    <script src="/js/apps.js"></script>
     <script src="/js/platform.js"></script>
+    <script src="/js/displays.js"></script>
     <script src="/js/navigation.js"></script>
+    <script src="/js/sound.js"></script>
     <script src="/js/main.js"></script>
   </body>
 </html>

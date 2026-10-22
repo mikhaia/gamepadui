@@ -3,17 +3,24 @@
 
   const Model = globalScope.GamePadModel;
   const DirectorySearch = globalScope.GamePadSearch;
+  const Apps = globalScope.GamePadApps;
   const Platform = globalScope.GamePadPlatform;
+  const Displays = globalScope.GamePadDisplays;
   const Navigation = globalScope.GamePadNavigation;
+  const Sound = globalScope.GamePadSound;
   const STORAGE_KEY = "gamepad-ui-state-v1";
   const DEFAULT_STATE = {
     library: [],
+    favoriteOrder: [],
     settings: {
       theme: "light",
       accent: "plum",
       backgroundPath: "",
       backgroundDim: 58,
       backgroundBlur: 0,
+      soundEnabled: true,
+      searchAllFiles: false,
+      display: null,
       searchPaths: []
     }
   };
@@ -46,6 +53,12 @@
   let toastTimer = 0;
   let nativeReady = false;
   let blobUrls = [];
+  let appsList = [];
+  let appsStatus = "idle";
+  let appsFilter = "";
+  let appsRequestId = 0;
+  let returnFocusTarget = null;
+  let detectedDisplays = [];
 
   const elements = {};
 
@@ -55,7 +68,8 @@
       "input-status-text", "favorites-grid", "library-grid", "explorer-grid", "explorer-path", "explorer-filter",
       "explorer-count", "library-search-input", "library-search-scope", "library-search-summary",
       "library-search-results", "section-tabs", "system-panel", "system-scrim", "modal-layer", "modal",
-      "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints"
+      "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
+      "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
 
@@ -89,6 +103,7 @@
       const saved = JSON.parse(raw);
       state = {
         library: Array.isArray(saved.library) ? saved.library.map(Model.normalizeItem) : [],
+        favoriteOrder: Array.isArray(saved.favoriteOrder) ? saved.favoriteOrder.map(String) : [],
         settings: { ...DEFAULT_STATE.settings, ...(saved.settings || {}) }
       };
     } catch (error) {
@@ -97,6 +112,8 @@
   }
 
   async function saveState() {
+    // Убираем из порядка снятые с избранного и закрепляем новые избранные в конце.
+    state.favoriteOrder = Model.orderFavorites(state.library, state.favoriteOrder).map((item) => item.id);
     const payload = JSON.stringify(state);
     try {
       if (hasNativeApi()) await globalScope.Neutralino.storage.setData(STORAGE_KEY, payload);
@@ -233,6 +250,7 @@
   async function applySettings() {
     document.body.dataset.theme = state.settings.theme || "light";
     document.body.dataset.accent = state.settings.accent || "plum";
+    Sound.setEnabled(state.settings.soundEnabled !== false);
     elements["background-wash"].style.setProperty("--background-dim", state.settings.backgroundDim / 100);
     elements["background-image"].style.setProperty("--background-blur", `${state.settings.backgroundBlur}px`);
     const backgroundUrl = await localImageUrl(state.settings.backgroundPath);
@@ -283,7 +301,7 @@
 
   function renderLibrary() {
     revokeBlobUrls();
-    const favorites = state.library.filter((item) => item.favorite);
+    const favorites = Model.orderFavorites(state.library, state.favoriteOrder);
     elements["favorites-grid"].innerHTML = favorites.length
       ? favorites.map(itemCardMarkup).join("")
       : emptyStateMarkup("favorites");
@@ -377,16 +395,49 @@
     const extension = Model.extensionOf(result.name).toUpperCase() || "FILE";
     const existing = state.library.some((item) => item.path === result.path);
     const selected = selectedExplorerPath === result.path ? " is-selected" : "";
+    const launchable = result.launchable ?? Model.isLaunchableEntry(result.name, result.type, getOsName());
+    const badge = !launchable
+      ? { label: "Открыть", className: " is-file" }
+      : existing
+        ? { label: "Уже в библиотеке", className: " is-existing" }
+        : { label: "Можно добавить", className: "" };
+    const revealLabel = fileManagerLabel();
     return `
-      <button class="file-card search-result-card${selected}" data-entry-name="${escapeHtml(result.name)}" data-entry-type="${result.type}" data-entry-path="${escapeHtml(result.path)}" data-focusable>
-        <span class="file-card__visual is-file${applicationBundle ? " is-application" : ""}">
-          <span class="file-card__type">${escapeHtml(extension.slice(0, 5))}</span>
-          <span class="file-card__corner">${applicationBundle ? "ПРИЛОЖЕНИЕ" : escapeHtml(extension)}</span>
+      <div class="search-result-wrap">
+      <button class="file-card search-result-row${selected}" title="${escapeHtml(result.path)}" data-entry-name="${escapeHtml(result.name)}" data-entry-type="${result.type}" data-entry-path="${escapeHtml(result.path)}" data-focusable>
+        <span class="file-card__visual is-file${applicationBundle ? " is-application" : ""}" aria-hidden="true">
+          <span class="file-card__type">${escapeHtml(extension.slice(0, 4))}</span>
         </span>
-        <span class="file-card__name">${escapeHtml(Model.nameFromPath(result.name))}</span>
-        <span class="search-result-card__path" title="${escapeHtml(result.path)}">${escapeHtml(result.path)}</span>
-        <span class="file-card__badge">${existing ? "Уже в библиотеке" : "Можно добавить"}</span>
-      </button>`;
+        <span class="file-card__info">
+          <span class="file-card__name">${escapeHtml(Model.nameFromPath(result.name))}</span>
+          <span class="search-result-row__path">${escapeHtml(result.path)}</span>
+        </span>
+        <span class="file-card__badge search-result-row__badge${badge.className}">${badge.label}</span>
+      </button>
+      <button type="button" class="search-result-row__reveal" data-action="reveal-in-file-manager" data-reveal-path="${escapeHtml(result.path)}" data-focusable aria-label="${revealLabel}" title="${revealLabel}">${icon("folder")}</button>
+      </div>`;
+  }
+
+  function fileManagerLabel() {
+    const osName = getOsName();
+    if (osName === "Darwin") return "Показать в Finder";
+    if (osName === "Windows") return "Показать в Проводнике Windows";
+    return "Открыть папку";
+  }
+
+  async function revealInFileManager(path) {
+    if (!hasNativeApi()) {
+      showToast("Открытие папки доступно в приложении Neutralino", "info");
+      return;
+    }
+    try {
+      await globalScope.Neutralino.os.execCommand(Platform.buildRevealCommand(path, getOsName()), { background: true });
+      const osName = getOsName();
+      showToast(osName === "Darwin" ? "Открываю папку в Finder" : osName === "Windows" ? "Открываю папку в Проводнике Windows" : "Открываю папку");
+    } catch (error) {
+      showToast("Не удалось открыть папку", "error");
+      console.error(error);
+    }
   }
 
   function directorySearchPlaceholder(iconName, title, text, action = "") {
@@ -399,9 +450,25 @@
       </div>`;
   }
 
+  function launchableExtensionsText() {
+    const extensions = Model.LAUNCHABLE_EXTENSIONS[getOsName()] || [];
+    return extensions.length ? extensions.map((extension) => `.${extension}`).join(", ") : "исполняемые файлы";
+  }
+
+  function renderSearchScope() {
+    const allFiles = Boolean(state.settings.searchAllFiles);
+    document.querySelectorAll('[data-action="set-search-scope"]').forEach((button) => {
+      const active = (button.dataset.scope === "all") === allFiles;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-checked", String(active));
+    });
+    elements["library-search-input"].placeholder = allFiles ? "Имя файла" : "Название игры или приложения";
+  }
+
   function renderDirectorySearch() {
     const searchPaths = Array.isArray(state.settings.searchPaths) ? state.settings.searchPaths.filter(Boolean) : [];
     const pathCount = searchPaths.length;
+    renderSearchScope();
     elements["library-search-input"].value = directorySearchQuery;
     elements["library-search-scope"].textContent = pathCount
       ? `Поиск по ${pathCount} ${pluralize(pathCount, ["папке", "папкам", "папкам"])}`
@@ -452,7 +519,36 @@
     elements["library-search-summary"].textContent = `${count} ${pluralize(count, ["результат", "результата", "результатов"])}${details.length ? ` · ${details.join(" · ")}` : ""}`;
     elements["library-search-results"].innerHTML = count
       ? directorySearchResults.map(directorySearchResultMarkup).join("")
-      : directorySearchPlaceholder("search", "Ничего не найдено", "Попробуйте другое слово или добавьте ещё одну папку поиска.");
+      : state.settings.searchAllFiles
+        ? directorySearchPlaceholder("search", "Ничего не найдено", "Попробуйте другое слово или добавьте ещё одну папку поиска.")
+        : directorySearchPlaceholder(
+          "search",
+          "Приложения не найдены",
+          `Сейчас ищутся только приложения (${launchableExtensionsText()}). Чтобы найти документы, архивы и другие файлы, включите «Все файлы».`,
+          `<button class="action-button action-button--primary" data-action="set-search-scope" data-scope="all" data-focusable>${icon("search")} Искать все файлы</button>`
+        );
+  }
+
+  async function setSearchScope(scope) {
+    const allFiles = scope === "all";
+    if (Boolean(state.settings.searchAllFiles) === allFiles) return;
+    state.settings.searchAllFiles = allFiles;
+    await saveState();
+    queueDirectorySearch();
+  }
+
+  async function openFileWithDefaultApp(path, name) {
+    if (!hasNativeApi()) {
+      showToast(`Предпросмотр открытия: ${name}`, "info");
+      return;
+    }
+    try {
+      await globalScope.Neutralino.os.execCommand(Platform.buildOpenCommand(path, getOsName()), { background: true });
+      showToast(`Открываю: ${name}`);
+    } catch (error) {
+      showToast("Не удалось открыть файл", "error");
+      console.error(error);
+    }
   }
 
   async function runDirectorySearch(query, requestId) {
@@ -466,6 +562,7 @@
         readDirectory: (path) => globalScope.Neutralino.filesystem.readDirectory(path),
         joinPath: Model.joinPath,
         isLaunchableEntry: Model.isLaunchableEntry,
+        includeAllFiles: Boolean(state.settings.searchAllFiles),
         shouldCancel: () => requestId !== directorySearchRequestId
       });
       if (requestId !== directorySearchRequestId || outcome.cancelled) return;
@@ -539,6 +636,7 @@
   function cycleSection(offset) {
     const index = SECTION_ORDER.indexOf(activeSection);
     const target = SECTION_ORDER[(index + offset + SECTION_ORDER.length) % SECTION_ORDER.length];
+    Sound.play("section");
     switchSection(target);
   }
 
@@ -549,7 +647,24 @@
     toastTimer = setTimeout(() => { elements.toast.classList.remove("is-visible"); }, 3200);
   }
 
+  // Запоминаем элемент основного экрана, чтобы после закрытия меню или окна фокус вернулся туда же.
+  function rememberReturnFocus() {
+    const focused = document.querySelector(".is-focused");
+    if (focused && !focused.closest("#modal, #system-panel, #apps-panel")) returnFocusTarget = focused;
+  }
+
+  function restoreReturnFocus() {
+    if (hasOverlayOpen()) return;
+    const target = returnFocusTarget?.isConnected
+      ? returnFocusTarget
+      : document.querySelector(`[data-section="${activeSection}"]`);
+    returnFocusTarget = null;
+    Navigation.setFocus(target, { scroll: false });
+    Navigation.ensureFocus();
+  }
+
   function openModal({ title, eyebrow = "GAMEPAD UI", body, wide = false, onReady }) {
+    rememberReturnFocus();
     elements["modal-title"].textContent = title;
     elements["modal-eyebrow"].textContent = eyebrow;
     elements["modal-body"].innerHTML = body;
@@ -569,13 +684,15 @@
     setTimeout(() => {
       elements["modal-layer"].hidden = true;
       elements["modal-body"].innerHTML = "";
-      Navigation.ensureFocus();
+      restoreReturnFocus();
     }, 160);
     return true;
   }
 
   function openSystemMenu() {
     if (elements["system-panel"].classList.contains("is-open")) return;
+    rememberReturnFocus();
+    closeAppsPanel();
     elements["system-scrim"].hidden = false;
     elements["system-panel"].classList.add("is-open");
     elements["system-panel"].setAttribute("aria-hidden", "false");
@@ -587,8 +704,185 @@
     elements["system-panel"].classList.remove("is-open");
     elements["system-panel"].setAttribute("aria-hidden", "true");
     setTimeout(() => { elements["system-scrim"].hidden = true; }, 220);
-    requestAnimationFrame(() => Navigation.ensureFocus());
+    requestAnimationFrame(restoreReturnFocus);
     return true;
+  }
+
+  function isAppsPanelOpen() {
+    return elements["apps-panel"].classList.contains("is-open");
+  }
+
+  function appsRootLabel() {
+    return getOsName() === "Windows" ? "Главное меню" : "Программы";
+  }
+
+  function appRowMarkup(app) {
+    const favorite = Boolean(state.library.find((item) => item.path === app.path)?.favorite);
+    const favoriteLabel = favorite ? "Убрать из избранного" : "Добавить в избранное";
+    return `
+      <div class="app-row-wrap">
+        <button class="app-row" data-app-path="${escapeHtml(app.path)}" title="${escapeHtml(app.path)}" data-focusable>
+          <span class="app-row__icon" aria-hidden="true">${escapeHtml(initials(app.name))}</span>
+          <span class="app-row__text"><b>${escapeHtml(app.name)}</b><small>${escapeHtml(app.group || appsRootLabel())}</small></span>
+        </button>
+        <button type="button" class="app-row__favorite${favorite ? " is-active" : ""}" data-app-favorite="${escapeHtml(app.path)}" tabindex="-1" aria-label="${favoriteLabel}" title="${favoriteLabel}">${icon("star")}</button>
+      </div>`;
+  }
+
+  function renderAppsPanel() {
+    const osName = getOsName();
+    elements["apps-eyebrow"].textContent = osName === "Windows" ? "ГЛАВНОЕ МЕНЮ" : osName === "Darwin" ? "ПРОГРАММЫ" : "ПРИЛОЖЕНИЯ";
+    elements["apps-filter"].value = appsFilter;
+    elements["apps-meta"].textContent = "";
+    const placeholder = (iconName, title, text) => directorySearchPlaceholder(iconName, title, text);
+
+    if (appsStatus === "native-required") {
+      elements["apps-list"].innerHTML = placeholder("library", "Нужен запуск через Neutralino", "Список приложений недоступен в браузерном предпросмотре.");
+      return;
+    }
+    if (appsStatus === "unsupported") {
+      elements["apps-list"].innerHTML = placeholder("library", "Пока только Windows и macOS", "На этой платформе список приложений ещё не поддерживается.");
+      return;
+    }
+    if (appsStatus === "idle" || appsStatus === "loading") {
+      elements["apps-meta"].textContent = "Загрузка…";
+      elements["apps-list"].innerHTML = '<div class="loading-state"><span></span><p>Собираю список приложений…</p></div>';
+      return;
+    }
+    if (appsStatus === "error") {
+      elements["apps-list"].innerHTML = placeholder("library", "Не удалось прочитать список", "Папки с приложениями недоступны. Попробуйте обновить список.");
+      return;
+    }
+
+    const visible = Apps.filterApps(appsList, appsFilter);
+    const total = `${appsList.length} ${pluralize(appsList.length, ["приложение", "приложения", "приложений"])}`;
+    elements["apps-meta"].textContent = appsFilter.trim() ? `${visible.length} из ${appsList.length}` : total;
+    elements["apps-list"].innerHTML = visible.length
+      ? visible.map(appRowMarkup).join("")
+      : appsList.length
+        ? placeholder("search", "Ничего не найдено", "Попробуйте изменить запрос.")
+        : placeholder("library", "Приложения не найдены", "В папках с приложениями нет ярлыков.");
+  }
+
+  function focusAppsPanel() {
+    const target = elements["apps-list"].querySelector("[data-app-path]") || elements["apps-filter"];
+    Navigation.setFocus(target, { scroll: false });
+  }
+
+  async function readEnvironmentVariable(name) {
+    try {
+      return String(await globalScope.Neutralino.os.getEnv(name) || "").trim();
+    } catch (error) {
+      return "";
+    }
+  }
+
+  async function appSourceEnvironment(osName) {
+    if (osName === "Windows") {
+      let appData = await readEnvironmentVariable("APPDATA");
+      if (!appData) {
+        try { appData = await globalScope.Neutralino.os.getPath("data"); } catch (error) { appData = ""; }
+      }
+      return { appData, programData: await readEnvironmentVariable("ProgramData") || "C:\\ProgramData" };
+    }
+    if (osName === "Darwin") return { home: await readEnvironmentVariable("HOME") };
+    return {};
+  }
+
+  async function loadApps() {
+    const requestId = ++appsRequestId;
+    if (!hasNativeApi()) {
+      appsStatus = "native-required";
+      renderAppsPanel();
+      return;
+    }
+    const osName = getOsName();
+    appsStatus = "loading";
+    renderAppsPanel();
+    try {
+      const sources = Apps.getAppSources(osName, await appSourceEnvironment(osName));
+      if (!sources.length) {
+        appsStatus = "unsupported";
+      } else {
+        const outcome = await Apps.collectApps({
+          sources,
+          osName,
+          readDirectory: (path) => globalScope.Neutralino.filesystem.readDirectory(path),
+          joinPath: Model.joinPath
+        });
+        if (requestId !== appsRequestId) return;
+        appsList = outcome.apps;
+        appsStatus = outcome.failedSources >= sources.length ? "error" : "ready";
+      }
+    } catch (error) {
+      if (requestId !== appsRequestId) return;
+      appsStatus = "error";
+      console.error(error);
+    }
+    renderAppsPanel();
+    if (!isAppsPanelOpen()) return;
+    const focused = document.querySelector(".is-focused");
+    const typing = focused === elements["apps-filter"] && appsFilter.trim();
+    if (!typing && !focused?.closest('[data-action="refresh-apps"]')) focusAppsPanel();
+  }
+
+  function openAppsPanel() {
+    if (isAppsPanelOpen()) return;
+    rememberReturnFocus();
+    closeSystemMenu();
+    elements["apps-scrim"].hidden = false;
+    elements["apps-panel"].classList.add("is-open");
+    elements["apps-panel"].setAttribute("aria-hidden", "false");
+    elements["apps-toggle"].setAttribute("aria-expanded", "true");
+    elements["apps-list"].scrollTop = 0;
+    if (appsStatus === "idle") loadApps();
+    else renderAppsPanel();
+    requestAnimationFrame(focusAppsPanel);
+  }
+
+  function closeAppsPanel() {
+    if (!isAppsPanelOpen()) return false;
+    elements["apps-panel"].classList.remove("is-open");
+    elements["apps-panel"].setAttribute("aria-hidden", "true");
+    elements["apps-toggle"].setAttribute("aria-expanded", "false");
+    setTimeout(() => { if (!isAppsPanelOpen()) elements["apps-scrim"].hidden = true; }, 220);
+    requestAnimationFrame(restoreReturnFocus);
+    return true;
+  }
+
+  function findApp(path) {
+    return appsList.find((app) => app.path === path);
+  }
+
+  function launchApp(path) {
+    const app = findApp(path);
+    if (!app) return;
+    const libraryItem = state.library.find((item) => item.path === path);
+    closeAppsPanel();
+    launchItem(libraryItem || Model.normalizeItem({ name: app.name, path }));
+  }
+
+  async function toggleAppFavorite(path) {
+    const app = findApp(path);
+    if (!app) return;
+    const existing = state.library.find((item) => item.path === path);
+    let favorite = true;
+    if (existing) {
+      existing.favorite = !existing.favorite;
+      favorite = existing.favorite;
+    } else {
+      state.library.push(Model.normalizeItem({ name: app.name, path, favorite: true }));
+    }
+    await saveState();
+    renderLibrary();
+    elements["apps-list"].querySelectorAll("[data-app-favorite]").forEach((button) => {
+      if (button.dataset.appFavorite !== path) return;
+      const label = favorite ? "Убрать из избранного" : "Добавить в избранное";
+      button.classList.toggle("is-active", favorite);
+      button.setAttribute("aria-label", label);
+      button.title = label;
+    });
+    showToast(favorite ? `«${app.name}» добавлено в избранное` : `«${app.name}» убрано из избранного`);
   }
 
   async function chooseFile(filters, defaultPath) {
@@ -752,6 +1046,10 @@
 
   function openItemActions(item) {
     if (!item) return;
+    const position = Model.favoritePosition(state.library, state.favoriteOrder, item.id);
+    const orderAction = activeSection === "favorites" && position.index >= 0
+      ? `<button class="action-list__item" data-action="open-favorite-order" data-focusable><span>${icon("reorder")}</span><b>Порядок</b><i>${position.index + 1} из ${position.total}</i></button>`
+      : "";
     openModal({
       title: item.name,
       eyebrow: "ДЕЙСТВИЯ",
@@ -759,10 +1057,78 @@
         <div class="action-list" data-action-item-id="${escapeHtml(item.id)}">
           <button class="action-list__item" data-action="launch-current-item" data-focusable><span>${icon("play")}</span><b>Запустить</b><i>Enter</i></button>
           <button class="action-list__item" data-action="toggle-favorite" data-focusable><span>${icon("star")}</span><b>${item.favorite ? "Убрать из избранного" : "Добавить в избранное"}</b><i>X</i></button>
+          ${orderAction}
           <button class="action-list__item" data-action="edit-current-item" data-focusable><span>${icon("edit")}</span><b>Изменить</b><i>${icon("chevron")}</i></button>
           <button class="action-list__item action-list__item--danger" data-action="remove-current-item" data-focusable><span>${icon("trash")}</span><b>Удалить из библиотеки</b><i>${icon("chevron")}</i></button>
         </div>`
     });
+  }
+
+  const FAVORITE_MOVE_OPTIONS = [
+    { move: "first", icon: "to-start", label: "Сделать первой" },
+    { move: "previous", icon: "arrow-left", label: "Сделать предыдущей" },
+    { move: "next", icon: "chevron", label: "Сделать следующей" },
+    { move: "last", icon: "to-end", label: "Сделать последней" }
+  ];
+
+  function favoriteMoveDisabled(move, index, total) {
+    return move === "first" || move === "previous" ? index <= 0 : index >= total - 1;
+  }
+
+  function favoritePositionText(index, total) {
+    return `Позиция ${index + 1} из ${total} в избранном`;
+  }
+
+  function openFavoriteOrder(item) {
+    const { index, total } = Model.favoritePosition(state.library, state.favoriteOrder, item.id);
+    openModal({
+      title: item.name,
+      eyebrow: "ПОРЯДОК В ИЗБРАННОМ",
+      body: `
+        <div class="action-list" data-order-item-id="${escapeHtml(item.id)}">
+          <p class="inline-notice" data-order-position aria-live="polite">${favoritePositionText(index, total)}</p>
+          ${FAVORITE_MOVE_OPTIONS.map((option) => `
+            <button class="action-list__item" data-action="move-favorite" data-move="${option.move}" data-focusable ${favoriteMoveDisabled(option.move, index, total) ? "disabled" : ""}><span>${icon(option.icon)}</span><b>${option.label}</b><i></i></button>`).join("")}
+        </div>`,
+      onReady: () => {
+        const first = elements["modal-body"].querySelector("[data-move]:not(:disabled)");
+        if (first) Navigation.setFocus(first, { scroll: false });
+      }
+    });
+  }
+
+  // Переставляем уже отрисованные карточки, а не перерисовываем сетку: обложки не перезагружаются,
+  // а карточка, на которую вернётся фокус после закрытия окна, остаётся той же.
+  function applyFavoriteOrderToGrid() {
+    const grid = elements["favorites-grid"];
+    const cards = new Map([...grid.querySelectorAll(".game-card[data-item-id]")].map((card) => [card.dataset.itemId, card]));
+    const ordered = Model.orderFavorites(state.library, state.favoriteOrder);
+    if (ordered.some((item) => !cards.has(item.id))) {
+      renderLibrary();
+      return;
+    }
+    ordered.forEach((item) => grid.appendChild(cards.get(item.id)));
+  }
+
+  async function moveFavoriteItem(id, move) {
+    state.favoriteOrder = Model.moveFavorite(state.library, state.favoriteOrder, id, move);
+    await saveState();
+    applyFavoriteOrderToGrid();
+    const card = [...elements["favorites-grid"].querySelectorAll(".game-card[data-item-id]")].find((element) => element.dataset.itemId === id);
+    if (card) returnFocusTarget = card;
+
+    const list = elements["modal-body"].querySelector("[data-order-item-id]");
+    if (!list || list.dataset.orderItemId !== id) return;
+    const { index, total } = Model.favoritePosition(state.library, state.favoriteOrder, id);
+    list.querySelector("[data-order-position]").textContent = favoritePositionText(index, total);
+    list.querySelectorAll("[data-move]").forEach((button) => {
+      button.disabled = favoriteMoveDisabled(button.dataset.move, index, total);
+    });
+    const focused = document.querySelector(".is-focused");
+    if (!focused || focused.disabled) {
+      const next = list.querySelector("[data-move]:not(:disabled)");
+      if (next) Navigation.setFocus(next, { scroll: false });
+    }
   }
 
   function explorerActionsMarkup(path, name) {
@@ -791,6 +1157,134 @@
     renderLibrary();
     closeModal();
     showToast(favorite ? "Добавлено в избранное" : "Добавлено в библиотеку");
+  }
+
+  const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+  async function detectDisplays() {
+    if (!hasNativeApi()) return { status: "native-required", displays: [] };
+    const command = Displays.buildQueryCommand(getOsName());
+    if (!command) return { status: "unsupported", displays: [] };
+    try {
+      const result = await globalScope.Neutralino.os.execCommand(command);
+      const displays = Displays.parseDisplays(result?.stdOut, getOsName());
+      return { status: displays.length ? "ready" : "error", displays };
+    } catch (error) {
+      console.warn("Unable to detect displays", error);
+      return { status: "error", displays: [] };
+    }
+  }
+
+  function displayChoiceMarkup(value, title, detail, checked, badge) {
+    return `
+      <label class="display-choice">
+        <input type="radio" name="display" value="${escapeHtml(value)}" ${checked ? "checked" : ""} data-focusable>
+        <span class="display-choice__badge" aria-hidden="true">${badge}</span>
+        <span class="display-choice__text"><b>${escapeHtml(title)}</b><small>${escapeHtml(detail)}</small></span>
+      </label>`;
+  }
+
+  function displayOptionsMarkup(outcome) {
+    const messages = {
+      "native-required": "Выбор монитора доступен в приложении Neutralino.",
+      unsupported: "На этой платформе выбор монитора пока не поддерживается.",
+      error: "Не удалось определить подключённые мониторы."
+    };
+    if (messages[outcome.status]) return `<p class="muted-copy">${messages[outcome.status]}</p>`;
+    const { displays } = outcome;
+    if (displays.length < 2) {
+      const only = displays[0];
+      return `<p class="muted-copy">Подключён один монитор (${only.pixelWidth} × ${only.pixelHeight}). Выбор появится, когда подключите второй.</p>`;
+    }
+    const preference = state.settings.display;
+    const saved = Displays.findDisplay(displays, preference);
+    // Сохранённый монитор сейчас не подключён: не сбрасываем выбор, если пользователь меняет другие настройки.
+    const missing = preference && !saved
+      ? displayChoiceMarkup("keep", "Сохранённый монитор", "Сейчас не подключён — окно останется здесь", true, icon("view"))
+      : "";
+    return `
+      <div class="display-options" role="radiogroup" aria-label="Монитор">
+        ${displayChoiceMarkup("auto", "Автоматически", "Монитор, который выберет система", !preference, icon("view"))}
+        ${missing}
+        ${displays.map((display) => displayChoiceMarkup(
+          String(display.index),
+          display.label,
+          `${display.pixelWidth} × ${display.pixelHeight} · ${Displays.relativePosition(display, displays)}`,
+          saved === display,
+          String(display.index + 1)
+        )).join("")}
+      </div>`;
+  }
+
+  async function waitForFullScreen(expected, timeout = 2000) {
+    const started = Date.now();
+    while (Date.now() - started < timeout) {
+      if (await globalScope.Neutralino.window.isFullScreen().catch(() => expected) === expected) return true;
+      await delay(100);
+    }
+    return false;
+  }
+
+  async function isWindowOnDisplay(display) {
+    try {
+      const [position, size] = await Promise.all([globalScope.Neutralino.window.getPosition(), globalScope.Neutralino.window.getSize()]);
+      return Displays.containsPoint(display, position.x + size.width / 2, position.y + size.height / 2);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Полноэкранное окно нельзя просто передвинуть: выходим из полноэкранного режима, переносим окно
+  // внутрь нужного монитора и разворачиваем снова — система откроет его на мониторе, где оно находится.
+  async function moveWindowToDisplay(display, options = {}) {
+    if (!hasNativeApi() || !display) return false;
+    const nativeWindow = globalScope.Neutralino.window;
+    if (await isWindowOnDisplay(display)) return true;
+    try {
+      const wasFullScreen = await nativeWindow.isFullScreen().catch(() => false);
+      const wasMaximized = !wasFullScreen && await nativeWindow.isMaximized().catch(() => false);
+      if (wasFullScreen) {
+        await nativeWindow.exitFullScreen();
+        await waitForFullScreen(false);
+        await delay(getOsName() === "Darwin" ? 700 : 120);
+      } else if (wasMaximized) {
+        await nativeWindow.unmaximize();
+      }
+      const bounds = Displays.targetWindowBounds(display);
+      // Размер задаём до переноса: в macOS window.setSize заодно центрирует окно на основном
+      // экране (так устроена библиотека webview внутри Neutralino) и отменил бы перенос.
+      await nativeWindow.setSize({ width: bounds.width, height: bounds.height });
+      await nativeWindow.move(bounds.x, bounds.y);
+      let moved = await isWindowOnDisplay(display);
+      if (!moved) {
+        // Окно могло ещё доигрывать анимацию выхода из полноэкранного режима — пробуем ещё раз.
+        await delay(400);
+        await nativeWindow.move(bounds.x, bounds.y);
+        moved = await isWindowOnDisplay(display);
+      }
+      if (wasFullScreen) {
+        await delay(150);
+        await nativeWindow.setFullScreen();
+      } else if (wasMaximized) {
+        await nativeWindow.maximize();
+      }
+      if (options.announce) {
+        showToast(moved ? `Окно перенесено: ${display.label}` : "Не удалось перенести окно на другой монитор", moved ? "success" : "error");
+      }
+      return moved;
+    } catch (error) {
+      console.error(error);
+      if (options.announce) showToast("Не удалось перенести окно на другой монитор", "error");
+      return false;
+    }
+  }
+
+  async function applySavedDisplay() {
+    if (!state.settings.display || !hasNativeApi()) return;
+    const outcome = await detectDisplays();
+    detectedDisplays = outcome.displays;
+    const display = Displays.findDisplay(outcome.displays, state.settings.display);
+    if (display && outcome.displays.length > 1) await moveWindowToDisplay(display);
   }
 
   function openSettings(options = {}) {
@@ -853,6 +1347,20 @@
             <label class="range-field"><input type="range" name="backgroundBlur" min="0" max="24" value="${state.settings.backgroundBlur}" data-focusable><output>${state.settings.backgroundBlur}px</output></label>
           </section>
           <section class="settings-section">
+            <div><h3>Монитор</h3><p>На каком мониторе показывать GamePad UI, если подключено несколько.</p></div>
+            <div class="settings-section__controls" id="display-options"><p class="muted-copy">Определяю мониторы…</p></div>
+          </section>
+          <section class="settings-section">
+            <div><h3>Звуки интерфейса</h3><p>Короткие сигналы при перемещении по интерфейсу и нажатии на элементы.</p></div>
+            <div class="settings-section__controls">
+              <label class="toggle-row">
+                <input type="checkbox" name="soundEnabled" ${state.settings.soundEnabled !== false ? "checked" : ""} data-focusable>
+                <span class="toggle"><i></i></span>
+                <span><b>Звуки навигации и нажатий</b><small>Перемещение, выбор, возврат и смена раздела</small></span>
+              </label>
+            </div>
+          </section>
+          <section class="settings-section">
             <div><h3>Папки поиска</h3><p>Поиск запускается только по запросу и просматривает вложенные папки.</p></div>
             <div class="search-paths" id="search-paths">
               ${searchPaths.length ? searchPaths.map((path) => `<div class="search-path"><span>${escapeHtml(path)}</span><button type="button" data-remove-search-path="${escapeHtml(path)}" data-focusable aria-label="Удалить папку">×</button></div>`).join("") : '<p class="muted-copy">Папки ещё не выбраны.</p>'}
@@ -869,19 +1377,34 @@
         form.querySelectorAll('input[type="range"]').forEach((input) => {
           input.addEventListener("input", () => { input.nextElementSibling.value = `${input.value}${input.name === "backgroundBlur" ? "px" : "%"}`; });
         });
+        detectDisplays().then((outcome) => {
+          detectedDisplays = outcome.displays;
+          const container = form.isConnected ? form.querySelector("#display-options") : null;
+          if (container) container.innerHTML = displayOptionsMarkup(outcome);
+        });
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const formData = new FormData(form);
+          const displayChoice = formData.get("display");
+          let targetDisplay = null;
+          if (displayChoice === "auto") {
+            state.settings.display = null;
+          } else if (displayChoice !== null && displayChoice !== "keep") {
+            targetDisplay = detectedDisplays.find((display) => String(display.index) === displayChoice) || null;
+            if (targetDisplay) state.settings.display = Displays.displayPreference(targetDisplay);
+          }
           state.settings.theme = String(formData.get("theme") || "light");
           state.settings.accent = String(formData.get("accent") || "plum");
           state.settings.backgroundPath = String(formData.get("backgroundPath") || "").trim();
           state.settings.backgroundDim = Number(formData.get("backgroundDim"));
           state.settings.backgroundBlur = Number(formData.get("backgroundBlur"));
+          state.settings.soundEnabled = formData.get("soundEnabled") === "on";
           await saveState();
           await applySettings();
           queueDirectorySearch();
           closeModal();
           showToast("Настройки сохранены");
+          if (targetDisplay) moveWindowToDisplay(targetDisplay, { announce: true });
         });
         if (options.revealSearchPaths) {
           requestAnimationFrame(() => {
@@ -920,6 +1443,14 @@
     switch (action) {
       case "add-item": openItemForm(); break;
       case "open-system-menu": openSystemMenu(); break;
+      case "toggle-apps-panel":
+        if (isAppsPanelOpen()) closeAppsPanel();
+        else openAppsPanel();
+        break;
+      case "close-apps-panel": closeAppsPanel(); break;
+      case "refresh-apps": loadApps(); break;
+      case "set-search-scope": await setSearchScope(target.dataset.scope); break;
+      case "reveal-in-file-manager": await revealInFileManager(target.dataset.revealPath); break;
       case "exit-application": {
         if (hasNativeApi()) await globalScope.Neutralino.app.exit();
         else {
@@ -1013,6 +1544,17 @@
         launchItem(state.library.find((item) => item.id === id));
         break;
       }
+      case "open-favorite-order": {
+        const id = target.closest("[data-action-item-id]").dataset.actionItemId;
+        const item = state.library.find((libraryItem) => libraryItem.id === id);
+        if (item) openFavoriteOrder(item);
+        break;
+      }
+      case "move-favorite": {
+        const list = target.closest("[data-order-item-id]");
+        await moveFavoriteItem(list.dataset.orderItemId, target.dataset.move);
+        break;
+      }
       case "toggle-favorite": {
         const id = target.closest("[data-action-item-id]").dataset.actionItemId;
         const item = state.library.find((libraryItem) => libraryItem.id === id);
@@ -1062,6 +1604,18 @@
   }
 
   function handleDocumentClick(event) {
+    const appFavorite = event.target.closest("[data-app-favorite]");
+    if (appFavorite) {
+      toggleAppFavorite(appFavorite.dataset.appFavorite);
+      return;
+    }
+
+    const appRow = event.target.closest("[data-app-path]");
+    if (appRow) {
+      launchApp(appRow.dataset.appPath);
+      return;
+    }
+
     const tab = event.target.closest("[data-section]");
     if (tab) {
       switchSection(tab.dataset.section);
@@ -1092,6 +1646,7 @@
       if (Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
         openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
       } else if (fileCard.dataset.entryType === "DIRECTORY") readExplorerDirectory(fileCard.dataset.entryPath);
+      else if (fileCard.closest("#library-search-results")) openFileWithDefaultApp(fileCard.dataset.entryPath, fileCard.dataset.entryName);
       else showToast("Для этого типа файла пока нет действий", "info");
       return;
     }
@@ -1113,48 +1668,108 @@
     if (actionTarget) handleActionClick(actionTarget.dataset.action, actionTarget);
   }
 
+  function clickSoundFor(target) {
+    const element = target instanceof Element
+      ? target.closest("button, a, label, input, select, textarea, [data-focusable], [data-action], .scrim")
+      : null;
+    if (!element) return "";
+    if (element.closest("[data-section]")) return "section";
+    if (element.closest('[data-action="close-modal"], [data-action="close-system-menu"], [data-action="close-apps-panel"], .scrim')) return "back";
+    return "select";
+  }
+
+  function handleClickSound(event) {
+    const sound = clickSoundFor(event.target);
+    if (sound) Sound.play(sound);
+  }
+
   function handleContextMenu(event) {
+    const appRow = event.target.closest("[data-app-path]");
+    if (appRow) {
+      event.preventDefault();
+      updateInputStatus("mouse");
+      Sound.play("select");
+      toggleAppFavorite(appRow.dataset.appPath);
+      return;
+    }
     const itemCard = event.target.closest(".game-card[data-item-id]");
     const fileCard = event.target.closest("[data-entry-path]");
     if (itemCard) {
       event.preventDefault();
       updateInputStatus("mouse");
+      Sound.play("select");
       selectedItemId = itemCard.dataset.itemId;
       openItemActions(state.library.find((item) => item.id === selectedItemId));
     } else if (fileCard && Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
       event.preventDefault();
       updateInputStatus("mouse");
+      Sound.play("select");
       selectedExplorerPath = fileCard.dataset.entryPath;
       openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
     }
   }
 
+  function hasOverlayOpen() {
+    return !elements["modal-layer"].hidden || elements["system-panel"].classList.contains("is-open") || isAppsPanelOpen();
+  }
+
   function handleGamepadAction(event) {
     const action = event.detail.action;
     if (action === "back") {
-      if (closeModal() || closeSystemMenu()) return;
+      if (closeModal() || closeSystemMenu() || closeAppsPanel()) {
+        Sound.play("back");
+        return;
+      }
       if (activeSection === "explorer") {
         const parent = Model.parentPath(explorerPath, getOsName());
-        if (parent && parent !== explorerPath) readExplorerDirectory(parent);
+        if (parent && parent !== explorerPath) {
+          Sound.play("back");
+          readExplorerDirectory(parent);
+        }
+      }
+    } else if (action === "apps") {
+      if (!elements["modal-layer"].hidden) return;
+      if (isAppsPanelOpen()) {
+        Sound.play("back");
+        closeAppsPanel();
+      } else {
+        Sound.play("select");
+        openAppsPanel();
       }
     } else if (action === "menu") {
-      if (elements["system-panel"].classList.contains("is-open")) closeSystemMenu();
-      else openSystemMenu();
+      if (elements["system-panel"].classList.contains("is-open")) {
+        Sound.play("back");
+        closeSystemMenu();
+      } else {
+        Sound.play("select");
+        openSystemMenu();
+      }
     } else if (action === "search") {
-      closeModal();
-      closeSystemMenu();
+      const closedModal = closeModal();
+      const closedMenu = closeSystemMenu();
+      const closedApps = closeAppsPanel();
+      if (closedModal || closedMenu || closedApps || activeSection !== "search") Sound.play("section");
       switchSection("search");
     } else if (action === "previous-section") {
-      if (elements["modal-layer"].hidden && !elements["system-panel"].classList.contains("is-open")) cycleSection(-1);
+      if (!hasOverlayOpen()) cycleSection(-1);
     } else if (action === "next-section") {
-      if (elements["modal-layer"].hidden && !elements["system-panel"].classList.contains("is-open")) cycleSection(1);
+      if (!hasOverlayOpen()) cycleSection(1);
     } else if (action === "options") {
       if (!elements["modal-layer"].hidden) return;
       const focused = document.querySelector(".is-focused");
+      const appRow = focused?.closest("[data-app-path]");
+      if (appRow) {
+        Sound.play("select");
+        toggleAppFavorite(appRow.dataset.appPath);
+        return;
+      }
       const itemCard = focused?.closest(".game-card[data-item-id]");
       const fileCard = focused?.closest("[data-entry-path]");
-      if (itemCard) openItemActions(state.library.find((item) => item.id === itemCard.dataset.itemId));
-      else if (fileCard && Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
+      if (itemCard) {
+        Sound.play("select");
+        openItemActions(state.library.find((item) => item.id === itemCard.dataset.itemId));
+      } else if (fileCard && Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
+        Sound.play("select");
         openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
       }
     }
@@ -1167,10 +1782,12 @@
   }
 
   function updateInputStatus(type, id) {
+    const typeChanged = elements["input-status"].dataset.type !== type;
     elements["input-status"].dataset.type = type;
     const labels = { keyboard: "Клавиатура", mouse: "Мышь", gamepad: id ? id.replace(/\s*\([^)]*\)\s*/g, " ").trim() : "Геймпад" };
     elements["input-status-text"].textContent = labels[type] || "Клавиатура";
-    renderControlHints(type);
+    // Перерисовываем подсказки только при смене способа ввода, иначе сбрасывается фокус на кнопке «Меню».
+    if (typeChanged) renderControlHints(type);
   }
 
   function renderControlHints(type) {
@@ -1179,13 +1796,15 @@
         { key: "↵", label: "Запустить" },
         { key: "Esc", label: "Назад", wide: true },
         { key: "X", label: "Действия" },
-        { key: "Y", label: "Поиск" }
+        { key: "Y", label: "Поиск" },
+        { key: "Ctrl ␣", label: "Приложения", wide: true }
       ],
       gamepad: [
         { key: "A", label: "Запустить", tone: "a" },
         { key: "B", label: "Назад", tone: "b" },
         { key: "X", label: "Действия", tone: "x" },
-        { key: "Y", label: "Поиск", tone: "y" }
+        { key: "Y", label: "Поиск", tone: "y" },
+        { key: icon("view"), label: "Приложения", menu: true }
       ],
       mouse: [
         { key: "ЛКМ", label: "Открыть", wide: true },
@@ -1195,7 +1814,7 @@
     const hints = hintSets[type] || hintSets.keyboard;
     elements["control-hints"].innerHTML = `${hints.map((hint) => `
       <div class="control-hint">
-        <kbd class="key ${hint.wide ? "key--wide" : ""} ${hint.tone ? `key--${hint.tone}` : ""}">${hint.key}</kbd>
+        <kbd class="key ${hint.wide ? "key--wide" : ""} ${hint.menu ? "key--menu" : ""} ${hint.tone ? `key--${hint.tone}` : ""}">${hint.key}</kbd>
         <span>${hint.label}</span>
       </div>`).join("")}
       <button type="button" class="control-hint control-hint--menu" data-action="open-system-menu" data-focusable>
@@ -1204,10 +1823,12 @@
   }
 
   function bindEvents() {
+    document.addEventListener("click", handleClickSound, true);
     document.addEventListener("click", handleDocumentClick);
     document.addEventListener("contextmenu", handleContextMenu);
     document.addEventListener("gamepad-action", handleGamepadAction);
     document.addEventListener("gamepad-focus", (event) => {
+      if (event.detail?.source === "move") Sound.play("move");
       const itemCard = event.target.closest(".game-card[data-item-id]");
       const fileCard = event.target.closest("[data-entry-path]");
       if (itemCard) selectedItemId = itemCard.dataset.itemId;
@@ -1224,6 +1845,7 @@
       if (event.key !== "Escape" || !explorerFilter) return;
       event.preventDefault();
       event.stopPropagation();
+      Sound.play("back");
       explorerFilter = "";
       renderExplorer();
     });
@@ -1232,10 +1854,34 @@
       if (event.key !== "Escape" || !directorySearchQuery) return;
       event.preventDefault();
       event.stopPropagation();
+      Sound.play("back");
       elements["library-search-input"].value = "";
       queueDirectorySearch();
     });
     elements["system-scrim"].addEventListener("click", closeSystemMenu);
+    elements["apps-scrim"].addEventListener("click", closeAppsPanel);
+    elements["apps-filter"].addEventListener("input", (event) => {
+      appsFilter = event.currentTarget.value;
+      if (appsStatus === "ready") renderAppsPanel();
+    });
+    elements["apps-filter"].addEventListener("keydown", (event) => {
+      const firstApp = elements["apps-list"].querySelector("[data-app-path]");
+      if (event.key === "ArrowDown" && firstApp) {
+        event.preventDefault();
+        Navigation.setFocus(firstApp);
+        Sound.play("move");
+      } else if (event.key === "Enter" && firstApp) {
+        event.preventDefault();
+        Sound.play("select");
+        launchApp(firstApp.dataset.appPath);
+      } else if (event.key === "Escape" && appsFilter) {
+        event.preventDefault();
+        event.stopPropagation();
+        Sound.play("back");
+        appsFilter = "";
+        renderAppsPanel();
+      }
+    });
   }
 
   async function init() {
@@ -1253,6 +1899,7 @@
     bindEvents();
     Navigation.init();
     switchSection("favorites", { focus: false });
+    applySavedDisplay();
   }
 
   init().catch((error) => {

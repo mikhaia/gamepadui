@@ -120,19 +120,52 @@
       .some((value) => String(value).toLocaleLowerCase().includes(normalized));
   }
 
+  const FAVORITE_MOVES = ["first", "previous", "next", "last"];
+
+  // Порядок избранного хранится отдельно (список id), чтобы не менять порядок библиотеки.
+  // Новые избранные, которых ещё нет в списке, идут в конце в порядке библиотеки.
+  function orderFavorites(library, favoriteOrder = []) {
+    const ranks = new Map((Array.isArray(favoriteOrder) ? favoriteOrder : []).map((id, index) => [String(id), index]));
+    const rankOf = ({ item, index }) => (ranks.has(item.id) ? ranks.get(item.id) : ranks.size + index);
+    return (Array.isArray(library) ? library : [])
+      .map((item, index) => ({ item, index }))
+      .filter(({ item }) => item?.favorite)
+      .sort((left, right) => rankOf(left) - rankOf(right))
+      .map(({ item }) => item);
+  }
+
+  function favoritePosition(library, favoriteOrder, id) {
+    const ids = orderFavorites(library, favoriteOrder).map((item) => item.id);
+    return { index: ids.indexOf(id), total: ids.length };
+  }
+
+  function moveFavorite(library, favoriteOrder, id, move) {
+    const ids = orderFavorites(library, favoriteOrder).map((item) => item.id);
+    const from = ids.indexOf(id);
+    if (from < 0 || !FAVORITE_MOVES.includes(move)) return ids;
+    const targets = { first: 0, previous: from - 1, next: from + 1, last: ids.length - 1 };
+    const to = Math.min(ids.length - 1, Math.max(0, targets[move]));
+    ids.splice(to, 0, ...ids.splice(from, 1));
+    return ids;
+  }
+
   const api = {
+    FAVORITE_MOVES,
     LAUNCHABLE_EXTENSIONS,
     createId,
     extensionOf,
+    favoritePosition,
     isApplicationBundle,
     isLaunchable,
     isLaunchableEntry,
     joinPath,
     matchesEntrySearch,
     matchesLibrarySearch,
+    moveFavorite,
     nameFromPath,
     normalizeCoverSearchResults,
     normalizeItem,
+    orderFavorites,
     parentPath,
     sortEntries
   };
