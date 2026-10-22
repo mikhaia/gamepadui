@@ -1,6 +1,7 @@
 bin/
 dist/
 node_modules/
+.tmp/
 .storage/
 neutralinojs.log
 resources/js/neutralino.js

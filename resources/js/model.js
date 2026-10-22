@@ -42,7 +42,20 @@
       .filter((result) => result.cover && /^https?:\/\//i.test(result.cover));
   }
 
+  // Только http:// и https:// с указанным сайтом — другие схемы (file:, javascript: и т. п.) не открываем.
+  function isWebUrl(value) {
+    const text = String(value || "").trim();
+    if (!/^https?:\/\/\S+$/i.test(text)) return false;
+    try {
+      const url = new URL(text);
+      return (url.protocol === "http:" || url.protocol === "https:") && Boolean(url.hostname);
+    } catch (error) {
+      return false;
+    }
+  }
+
   function nameFromPath(path) {
+    if (isWebUrl(path)) return new URL(String(path).trim()).hostname.replace(/^www\./i, "");
     const cleaned = String(path || "").replace(/[\\/]+$/, "");
     const filename = cleaned.split(/[\\/]/).pop() || "";
     return filename.replace(/\.(exe|lnk|bat|cmd|com|url|appimage|desktop|sh|command|app)$/i, "");
@@ -74,13 +87,56 @@
     return String(entry?.entry || entry || "").toLocaleLowerCase().includes(normalizedQuery);
   }
 
-  function sortEntries(entries, osName) {
+  const EXPLORER_SORTS = ["name", "size", "date"];
+
+  function statOf(stats, name) {
+    if (!stats) return null;
+    return (stats instanceof Map ? stats.get(name) : stats[name]) || null;
+  }
+
+  // Папки всегда идут первыми. «Размер» — от больших к меньшим (пока размер папки не посчитан,
+  // она стоит после посчитанных), «дата» — от новых к старым. Записи без сведений идут после остальных.
+  function sortEntries(entries, osName, options = {}) {
+    const sort = EXPLORER_SORTS.includes(options.sort) ? options.sort : "name";
+    const metric = (entry) => {
+      const stat = statOf(options.stats, entry.entry);
+      // Для папок (и пакетов .app) размер считается отдельно и приходит в поле folderSize.
+      if (sort === "size") {
+        const value = entry.type === "FILE" ? stat?.size : stat?.folderSize;
+        return Number.isFinite(value) ? value : null;
+      }
+      if (sort === "date") return Number.isFinite(stat?.modifiedAt) ? stat.modifiedAt : null;
+      return null;
+    };
     return [...entries].sort((left, right) => {
       const leftIsDirectory = left.type === "DIRECTORY" && !isApplicationBundle(left.entry, left.type, osName);
       const rightIsDirectory = right.type === "DIRECTORY" && !isApplicationBundle(right.entry, right.type, osName);
       if (leftIsDirectory !== rightIsDirectory) return leftIsDirectory ? -1 : 1;
+      if (sort !== "name") {
+        const leftValue = metric(left);
+        const rightValue = metric(right);
+        if (leftValue !== rightValue) {
+          if (leftValue === null) return 1;
+          if (rightValue === null) return -1;
+          return rightValue - leftValue;
+        }
+      }
       return left.entry.localeCompare(right.entry, undefined, { numeric: true, sensitivity: "base" });
     });
+  }
+
+  function formatFileSize(bytes) {
+    const value = Number(bytes);
+    if (!Number.isFinite(value) || value < 0) return "";
+    const units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+    let size = value;
+    let unit = 0;
+    while (size >= 1024 && unit < units.length - 1) {
+      size /= 1024;
+      unit += 1;
+    }
+    const digits = unit === 0 || size >= 100 ? 0 : 1;
+    return `${size.toLocaleString("ru-RU", { maximumFractionDigits: digits })} ${units[unit]}`;
   }
 
   function joinPath(base, entry, osName) {
@@ -150,14 +206,17 @@
   }
 
   const api = {
+    EXPLORER_SORTS,
     FAVORITE_MOVES,
     LAUNCHABLE_EXTENSIONS,
     createId,
     extensionOf,
     favoritePosition,
+    formatFileSize,
     isApplicationBundle,
     isLaunchable,
     isLaunchableEntry,
+    isWebUrl,
     joinPath,
     matchesEntrySearch,
     matchesLibrarySearch,

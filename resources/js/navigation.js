@@ -30,9 +30,8 @@
 
   function visibleFocusableElements() {
     const modal = document.getElementById("modal-layer");
-    const panel = ["system-panel", "apps-panel"]
-      .map((id) => document.getElementById(id))
-      .find((element) => element?.classList.contains("is-open"));
+    // Открытая боковая панель или выпадающее меню (data-focus-root) удерживает фокус внутри себя.
+    const panel = document.querySelector("[data-focus-root].is-open");
     let root = document;
     if (modal && !modal.hidden) root = document.getElementById("modal");
     else if (panel) root = panel;

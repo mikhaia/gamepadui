@@ -6,6 +6,7 @@
   const Apps = globalScope.GamePadApps;
   const Platform = globalScope.GamePadPlatform;
   const Displays = globalScope.GamePadDisplays;
+  const FolderSizes = globalScope.GamePadFolderSizes;
   const Navigation = globalScope.GamePadNavigation;
   const Sound = globalScope.GamePadSound;
   const STORAGE_KEY = "gamepad-ui-state-v1";
@@ -20,6 +21,8 @@
       backgroundBlur: 0,
       soundEnabled: true,
       searchAllFiles: false,
+      explorerSort: "name",
+      explorerView: "tiles",
       display: null,
       searchPaths: []
     }
@@ -42,6 +45,14 @@
   let explorerEntries = [];
   let explorerReadError = false;
   let explorerFilter = "";
+  let explorerStats = new Map();
+  let explorerRequestId = 0;
+  // Размеры папок считаются отдельным фоновым процессом и кешируются на 10 минут.
+  const FOLDER_SIZE_TTL_MS = 10 * 60 * 1000;
+  const FOLDER_SIZE_JOB_TIMEOUT_MS = 120 * 1000;
+  const folderSizeCache = new Map();
+  let folderSizeJob = null;
+  let folderSizeRenderTimer = 0;
   let directorySearchQuery = "";
   let directorySearchMode = "idle";
   let directorySearchResults = [];
@@ -69,7 +80,8 @@
       "explorer-count", "library-search-input", "library-search-scope", "library-search-summary",
       "library-search-results", "section-tabs", "system-panel", "system-scrim", "modal-layer", "modal",
       "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
-      "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow"
+      "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow", "explorer-sort", "explorer-sort-button",
+      "explorer-sort-label", "explorer-sort-menu"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
 
@@ -85,7 +97,10 @@
     if (typeof globalScope.Neutralino === "undefined") return false;
     try {
       globalScope.Neutralino.init();
-      globalScope.Neutralino.events.on("windowClose", () => globalScope.Neutralino.app.exit());
+      globalScope.Neutralino.events.on("windowClose", async () => {
+        await stopFolderSizeJob();
+        globalScope.Neutralino.app.exit();
+      });
       nativeReady = true;
       return true;
     } catch (error) {
@@ -314,6 +329,27 @@
     if (elements["library-search-results"]) renderDirectorySearch();
   }
 
+  const EXPLORER_SORT_LABELS = { name: "По названию", size: "По размеру", date: "По дате изменения" };
+  const explorerShortDate = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const explorerFullDate = new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  function explorerSortKey() {
+    return Model.EXPLORER_SORTS.includes(state.settings.explorerSort) ? state.settings.explorerSort : "name";
+  }
+
+  function explorerViewMode() {
+    return state.settings.explorerView === "list" ? "list" : "tiles";
+  }
+
+  // Размер и дата нужны только для сортировки по ним и для вида «Список».
+  function explorerNeedsStats() {
+    return hasNativeApi() && (explorerSortKey() !== "name" || explorerViewMode() === "list");
+  }
+
+  function detailMarkup(parts) {
+    return parts.filter(Boolean).map(escapeHtml).join('<span class="file-card__detail-separator" aria-hidden="true">·</span>');
+  }
+
   function fileEntryMarkup(item) {
     const path = Model.joinPath(explorerPath, item.entry, getOsName());
     const applicationBundle = Model.isApplicationBundle(item.entry, item.type, getOsName());
@@ -322,20 +358,263 @@
     const selected = selectedExplorerPath === path ? " is-selected" : "";
     const extension = Model.extensionOf(item.entry).toUpperCase();
     const typeLabel = directory ? "Папка" : applicationBundle ? "Приложение" : extension || "Файл";
+    const stat = explorerStats.get(item.entry);
+    const size = item.type === "FILE"
+      ? (Number.isFinite(stat?.size) ? Model.formatFileSize(stat.size) : "")
+      : (explorerFolderSizesNeeded() ? folderSizeText(path) : "");
+    const modified = Number.isFinite(stat?.modifiedAt) && stat.modifiedAt > 0 ? new Date(stat.modifiedAt) : null;
+    const list = explorerViewMode() === "list";
+    const sort = explorerSortKey();
+    const detail = list
+      ? detailMarkup([typeLabel, size, modified ? explorerFullDate.format(modified) : ""])
+      : detailMarkup([
+        typeLabel,
+        sort === "size" ? size : "",
+        sort === "date" && modified ? explorerShortDate.format(modified) : "",
+        launchable ? "Можно добавить" : ""
+      ]);
+    const visual = list && !directory
+      ? `<span class="file-card__type">${escapeHtml((extension || (applicationBundle ? "APP" : "FILE")).slice(0, 4))}</span>`
+      : icon(directory ? "folder" : "file");
+    const existing = launchable && state.library.some((libraryItem) => libraryItem.path === path);
+    const badge = list && launchable
+      ? `<span class="file-card__badge search-result-row__badge${existing ? " is-existing" : ""}">${existing ? "Уже в библиотеке" : "Можно добавить"}</span>`
+      : "";
     return `
       <button class="file-card${selected}" title="${escapeHtml(item.entry)}" data-entry-name="${escapeHtml(item.entry)}" data-entry-type="${item.type}" data-entry-path="${escapeHtml(path)}" data-focusable>
         <span class="file-card__visual ${directory ? "is-folder" : "is-file"}${applicationBundle ? " is-application" : ""}" aria-hidden="true">
-          ${icon(directory ? "folder" : "file")}
+          ${visual}
         </span>
         <span class="file-card__info">
           <span class="file-card__name">${escapeHtml(item.entry)}</span>
-          <span class="file-card__detail">${escapeHtml(typeLabel)}${launchable ? '<span class="file-card__detail-separator" aria-hidden="true">·</span>Можно добавить' : ""}</span>
+          <span class="file-card__detail">${detail}</span>
         </span>
+        ${badge}
       </button>`;
   }
 
+  function explorerFolderSizesNeeded() {
+    return hasNativeApi() && (explorerSortKey() === "size" || explorerViewMode() === "list")
+      && Boolean(FolderSizes.buildCommand(explorerPath, getOsName()));
+  }
+
+  function knownFolderSize(path) {
+    const cached = folderSizeCache.get(path);
+    // Частичный подсчёт с нулём ничего не говорит о размере — считаем его неизвестным.
+    return cached && !(cached.partial && cached.size === 0) ? cached : null;
+  }
+
+  function folderSizeText(path) {
+    const cached = knownFolderSize(path);
+    if (cached) return `${cached.partial ? "≥ " : ""}${Model.formatFileSize(cached.size)}`;
+    return folderSizeJob?.path === explorerPath ? "считаю…" : "";
+  }
+
+  function scheduleFolderSizeRender() {
+    clearTimeout(folderSizeRenderTimer);
+    folderSizeRenderTimer = setTimeout(() => {
+      if (!explorerReadError) renderExplorer();
+    }, 250);
+  }
+
+  function applyFolderSizeOutput(job, results) {
+    if (!results.length) return;
+    const now = Date.now();
+    results.forEach((result) => {
+      folderSizeCache.set(Model.joinPath(job.path, result.name, getOsName()), { size: result.size, partial: result.partial, at: now });
+    });
+    if (job.path === explorerPath) scheduleFolderSizeRender();
+  }
+
+  function finishFolderSizeJob(job) {
+    if (folderSizeJob !== job) return;
+    clearTimeout(job.timeout);
+    folderSizeJob = null;
+    if (job.path === explorerPath) scheduleFolderSizeRender();
+  }
+
+  function handleFolderSizeEvent(job, detail) {
+    if (detail.action === "stdOut") {
+      applyFolderSizeOutput(job, job.parser.feed(detail.data));
+    } else if (detail.action === "exit") {
+      applyFolderSizeOutput(job, job.parser.flush());
+      finishFolderSizeJob(job);
+    }
+  }
+
+  function handleSpawnedProcess(event) {
+    const detail = event.detail || {};
+    const job = folderSizeJob;
+    if (!job) return;
+    // Вывод может прийти раньше, чем spawnProcess вернёт номер процесса, — придерживаем его.
+    if (job.id === null) {
+      job.early.push(detail);
+      return;
+    }
+    if (detail.id === job.id) handleFolderSizeEvent(job, detail);
+  }
+
+  async function stopFolderSizeJob(job = folderSizeJob) {
+    if (!job) return;
+    if (folderSizeJob === job) folderSizeJob = null;
+    clearTimeout(job.timeout);
+    job.cancelled = true;
+    if (job.id !== null) {
+      await globalScope.Neutralino.os.updateSpawnedProcess(job.id, "exit").catch(() => {});
+    }
+  }
+
+  async function startFolderSizeJob(path) {
+    const command = FolderSizes.buildCommand(path, getOsName());
+    if (!command) return;
+    if (folderSizeJob) stopFolderSizeJob(folderSizeJob);
+    // Задание становится текущим сразу, чтобы интерфейс тут же показал «считаю…».
+    const job = { path, id: null, early: [], timeout: 0, cancelled: false, parser: FolderSizes.createParser(getOsName(), path) };
+    folderSizeJob = job;
+    try {
+      const process = await globalScope.Neutralino.os.spawnProcess(command);
+      if (folderSizeJob !== job || job.cancelled) {
+        await globalScope.Neutralino.os.updateSpawnedProcess(process.id, "exit").catch(() => {});
+        return;
+      }
+      job.id = process.id;
+      job.timeout = setTimeout(() => {
+        stopFolderSizeJob();
+        if (path === explorerPath) scheduleFolderSizeRender();
+      }, FOLDER_SIZE_JOB_TIMEOUT_MS);
+      job.early.splice(0).filter((detail) => detail.id === job.id).forEach((detail) => handleFolderSizeEvent(job, detail));
+    } catch (error) {
+      console.warn("Unable to measure folder sizes", error);
+      finishFolderSizeJob(job);
+    }
+  }
+
+  // Запускает подсчёт, если размеры сейчас показываются и для текущей папки их ещё нет (или они устарели).
+  function syncFolderSizes() {
+    if (!explorerFolderSizesNeeded() || explorerReadError) {
+      if (folderSizeJob) {
+        stopFolderSizeJob();
+        scheduleFolderSizeRender();
+      }
+      return;
+    }
+    if (folderSizeJob?.path === explorerPath) return;
+    const now = Date.now();
+    const stale = explorerEntries.some((entry) => {
+      if (entry.type !== "DIRECTORY") return false;
+      const cached = folderSizeCache.get(Model.joinPath(explorerPath, entry.entry, getOsName()));
+      return !cached || now - cached.at > FOLDER_SIZE_TTL_MS;
+    });
+    if (stale) {
+      startFolderSizeJob(explorerPath);
+      renderExplorer();
+    } else if (folderSizeJob) {
+      stopFolderSizeJob();
+    }
+  }
+
+  function renderExplorerControls() {
+    const sort = explorerSortKey();
+    const view = explorerViewMode();
+    elements["explorer-sort-label"].textContent = EXPLORER_SORT_LABELS[sort];
+    elements["explorer-sort-menu"].querySelectorAll("[data-sort]").forEach((option) => {
+      const active = option.dataset.sort === sort;
+      option.classList.toggle("is-active", active);
+      option.setAttribute("aria-selected", String(active));
+    });
+    document.querySelectorAll("[data-explorer-view]").forEach((button) => {
+      const active = button.dataset.explorerView === view;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-checked", String(active));
+    });
+    elements["explorer-grid"].classList.toggle("is-list", view === "list");
+  }
+
+  // Neutralino не отдаёт размер и дату в readDirectory, поэтому спрашиваем их по каждому элементу,
+  // по 12 запросов одновременно. Результат кешируется для текущей папки.
+  async function loadExplorerStats(path, entries, requestId) {
+    const pending = entries.filter((entry) => !explorerStats.has(entry.entry));
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < pending.length && requestId === explorerRequestId) {
+        const entry = pending[cursor];
+        cursor += 1;
+        try {
+          const stats = await globalScope.Neutralino.filesystem.getStats(Model.joinPath(path, entry.entry, getOsName()));
+          if (requestId === explorerRequestId) explorerStats.set(entry.entry, { size: Number(stats?.size), modifiedAt: Number(stats?.modifiedAt) });
+        } catch (error) {
+          if (requestId === explorerRequestId) explorerStats.set(entry.entry, null);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(12, pending.length) }, worker));
+  }
+
+  async function refreshExplorerOrder() {
+    renderExplorerControls();
+    if (explorerNeedsStats() && explorerPath && !explorerReadError) {
+      const requestId = explorerRequestId;
+      await loadExplorerStats(explorerPath, explorerEntries, requestId);
+      if (requestId !== explorerRequestId) return;
+    }
+    renderExplorer();
+    syncFolderSizes();
+  }
+
+  function isExplorerSortMenuOpen() {
+    return elements["explorer-sort-menu"].classList.contains("is-open");
+  }
+
+  function openExplorerSortMenu() {
+    if (isExplorerSortMenuOpen()) return;
+    renderExplorerControls();
+    elements["explorer-sort-menu"].classList.add("is-open");
+    elements["explorer-sort-menu"].setAttribute("aria-hidden", "false");
+    elements["explorer-sort-button"].setAttribute("aria-expanded", "true");
+    const current = elements["explorer-sort-menu"].querySelector(`[data-sort="${explorerSortKey()}"]`);
+    requestAnimationFrame(() => Navigation.setFocus(current, { scroll: false }));
+  }
+
+  function closeExplorerSortMenu(options = {}) {
+    if (!isExplorerSortMenuOpen()) return false;
+    elements["explorer-sort-menu"].classList.remove("is-open");
+    elements["explorer-sort-menu"].setAttribute("aria-hidden", "true");
+    elements["explorer-sort-button"].setAttribute("aria-expanded", "false");
+    if (options.focusButton !== false) requestAnimationFrame(() => Navigation.setFocus(elements["explorer-sort-button"], { scroll: false }));
+    return true;
+  }
+
+  async function setExplorerSort(sort) {
+    closeExplorerSortMenu();
+    if (!Model.EXPLORER_SORTS.includes(sort) || sort === explorerSortKey()) return;
+    state.settings.explorerSort = sort;
+    await saveState();
+    await refreshExplorerOrder();
+  }
+
+  async function setExplorerView(view) {
+    if (!["tiles", "list"].includes(view) || view === explorerViewMode()) return;
+    state.settings.explorerView = view;
+    await saveState();
+    await refreshExplorerOrder();
+  }
+
+  function explorerSortStats() {
+    const stats = new Map(explorerStats);
+    explorerEntries.forEach((entry) => {
+      if (entry.type !== "DIRECTORY") return;
+      const cached = knownFolderSize(Model.joinPath(explorerPath, entry.entry, getOsName()));
+      if (cached) stats.set(entry.entry, { ...(explorerStats.get(entry.entry) || {}), folderSize: cached.size });
+    });
+    return stats;
+  }
+
   function renderExplorer() {
-    const visibleEntries = explorerEntries.filter((entry) => Model.matchesEntrySearch(entry, explorerFilter));
+    renderExplorerControls();
+    const focused = document.querySelector(".is-focused");
+    const focusedPath = focused && elements["explorer-grid"].contains(focused) ? focused.dataset.entryPath : "";
+    const sortedEntries = Model.sortEntries(explorerEntries, getOsName(), { sort: explorerSortKey(), stats: explorerSortStats() });
+    const visibleEntries = sortedEntries.filter((entry) => Model.matchesEntrySearch(entry, explorerFilter));
     const filtering = Boolean(explorerFilter.trim());
     elements["explorer-path"].textContent = explorerPath || "Выберите папку";
     elements["explorer-filter"].value = explorerFilter;
@@ -351,6 +630,10 @@
       : filtering && explorerEntries.length
         ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("search")}</div><h3>Ничего не найдено</h3><p>Попробуйте изменить запрос для этой папки.</p></div>`
         : `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("folder")}</div><h3>Папка пуста</h3><p>Здесь нет файлов или вложенных папок.</p></div>`;
+    if (focusedPath) {
+      const card = [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")].find((element) => element.dataset.entryPath === focusedPath);
+      if (card) Navigation.setFocus(card);
+    }
   }
 
   function pluralize(number, forms) {
@@ -363,6 +646,8 @@
 
   async function readExplorerDirectory(path) {
     if (!path) return;
+    const requestId = ++explorerRequestId;
+    explorerStats = new Map();
     explorerPath = path;
     explorerFilter = "";
     selectedExplorerPath = "";
@@ -377,11 +662,17 @@
           { entry: "Notes.txt", type: "FILE" }
         ];
       } else {
-        explorerEntries = Model.sortEntries(await globalScope.Neutralino.filesystem.readDirectory(path), getOsName());
+        const entries = await globalScope.Neutralino.filesystem.readDirectory(path);
+        if (requestId !== explorerRequestId) return;
+        explorerEntries = entries;
+        if (explorerNeedsStats()) await loadExplorerStats(path, entries, requestId);
+        if (requestId !== explorerRequestId) return;
       }
       renderExplorer();
+      syncFolderSizes();
       requestAnimationFrame(() => Navigation.ensureFocus());
     } catch (error) {
+      if (requestId !== explorerRequestId) return;
       explorerEntries = [];
       explorerReadError = true;
       renderExplorer();
@@ -611,6 +902,7 @@
 
   function switchSection(section, options = {}) {
     if (!SECTION_ORDER.includes(section)) return;
+    closeExplorerSortMenu({ focusButton: false });
     activeSection = section;
     document.querySelectorAll("[data-section]").forEach((tab) => {
       const active = tab.dataset.section === section;
@@ -664,6 +956,7 @@
   }
 
   function openModal({ title, eyebrow = "GAMEPAD UI", body, wide = false, onReady }) {
+    closeExplorerSortMenu({ focusButton: false });
     rememberReturnFocus();
     elements["modal-title"].textContent = title;
     elements["modal-eyebrow"].textContent = eyebrow;
@@ -691,6 +984,7 @@
 
   function openSystemMenu() {
     if (elements["system-panel"].classList.contains("is-open")) return;
+    closeExplorerSortMenu({ focusButton: false });
     rememberReturnFocus();
     closeAppsPanel();
     elements["system-scrim"].hidden = false;
@@ -828,6 +1122,7 @@
 
   function openAppsPanel() {
     if (isAppsPanelOpen()) return;
+    closeExplorerSortMenu({ focusButton: false });
     rememberReturnFocus();
     closeSystemMenu();
     elements["apps-scrim"].hidden = false;
@@ -911,14 +1206,14 @@
           <input name="name" value="${escapeHtml(item.name || "")}" placeholder="Например, Forza Horizon" autocomplete="off" data-focusable required>
         </label>
         <label class="field field--wide">
-          <span>Исполняемый файл, ярлык или приложение .app</span>
+          <span>Исполняемый файл, ярлык, приложение .app или ссылка на сайт</span>
           <div class="field__picker">
-            <input name="path" value="${escapeHtml(item.path || "")}" placeholder="C:\\Games\\Game.exe" autocomplete="off" data-focusable required>
+            <input name="path" value="${escapeHtml(item.path || "")}" placeholder="C:\\Games\\Game.exe или https://example.com" autocomplete="off" data-focusable required>
             <button type="button" class="action-button" data-action="pick-executable" data-focusable>Обзор</button>
           </div>
         </label>
         <label class="field field--wide">
-          <span>Аргументы запуска <small>необязательно</small></span>
+          <span>Аргументы запуска <small>необязательно, для ссылок не используются</small></span>
           <input name="arguments" value="${escapeHtml(item.arguments || "")}" placeholder="--fullscreen" autocomplete="off" data-focusable>
         </label>
         <div class="cover-field">
@@ -995,6 +1290,10 @@
           updateCoverPreview(form, form.elements.coverPath.value);
         });
         selectCoverSource(form, form.elements.coverSource.value);
+        form.elements.path.addEventListener("change", () => {
+          const path = form.elements.path.value.trim();
+          if (!form.elements.name.value.trim() && Model.isWebUrl(path)) form.elements.name.value = Model.nameFromPath(path);
+        });
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const formData = new FormData(form);
@@ -1010,6 +1309,14 @@
           });
           if (!updated.name || !updated.path) {
             showToast("Укажите название и путь", "error");
+            return;
+          }
+          if (/^https?:/i.test(updated.path) && !Model.isWebUrl(updated.path)) {
+            showToast("Проверьте ссылку: она должна выглядеть как https://example.com", "error");
+            return;
+          }
+          if (/^www\.[^\s\\/]+\.[a-z]{2,}/i.test(updated.path)) {
+            showToast("Добавьте https:// в начало ссылки, например https://" + updated.path, "error");
             return;
           }
           if (["url", "gamestory"].includes(updated.coverSource) && updated.coverPath && !/^https?:\/\//i.test(updated.coverPath)) {
@@ -1037,7 +1344,7 @@
     try {
       const command = Platform.buildLaunchCommand(item, getOsName());
       await globalScope.Neutralino.os.execCommand(command, { background: true });
-      showToast(`Запускаю: ${item.name}`);
+      showToast(Model.isWebUrl(item.path) ? `Открываю в браузере: ${item.name}` : `Запускаю: ${item.name}`);
     } catch (error) {
       showToast("Не удалось запустить приложение", "error");
       console.error(error);
@@ -1451,8 +1758,17 @@
       case "refresh-apps": loadApps(); break;
       case "set-search-scope": await setSearchScope(target.dataset.scope); break;
       case "reveal-in-file-manager": await revealInFileManager(target.dataset.revealPath); break;
+      case "toggle-explorer-sort":
+        if (isExplorerSortMenuOpen()) closeExplorerSortMenu();
+        else openExplorerSortMenu();
+        break;
+      case "set-explorer-sort": await setExplorerSort(target.dataset.sort); break;
+      case "set-explorer-view": await setExplorerView(target.dataset.explorerView); break;
       case "exit-application": {
-        if (hasNativeApi()) await globalScope.Neutralino.app.exit();
+        if (hasNativeApi()) {
+          await stopFolderSizeJob();
+          await globalScope.Neutralino.app.exit();
+        }
         else {
           closeSystemMenu();
           showToast("В приложении Neutralino этот пункт закроет GamePad UI", "info");
@@ -1604,6 +1920,8 @@
   }
 
   function handleDocumentClick(event) {
+    if (isExplorerSortMenuOpen() && !event.target.closest("#explorer-sort")) closeExplorerSortMenu({ focusButton: false });
+
     const appFavorite = event.target.closest("[data-app-favorite]");
     if (appFavorite) {
       toggleAppFavorite(appFavorite.dataset.appFavorite);
@@ -1716,7 +2034,7 @@
   function handleGamepadAction(event) {
     const action = event.detail.action;
     if (action === "back") {
-      if (closeModal() || closeSystemMenu() || closeAppsPanel()) {
+      if (closeExplorerSortMenu() || closeModal() || closeSystemMenu() || closeAppsPanel()) {
         Sound.play("back");
         return;
       }
@@ -1823,6 +2141,7 @@
   }
 
   function bindEvents() {
+    if (hasNativeApi()) globalScope.Neutralino.events.on("spawnedProcess", handleSpawnedProcess);
     document.addEventListener("click", handleClickSound, true);
     document.addEventListener("click", handleDocumentClick);
     document.addEventListener("contextmenu", handleContextMenu);

@@ -113,3 +113,64 @@ test("reports the position of a favorite", () => {
   assert.deepEqual(model.favoritePosition(LIBRARY, ["d"], "d"), { index: 0, total: 4 });
   assert.deepEqual(model.favoritePosition(LIBRARY, [], "b"), { index: -1, total: 4 });
 });
+
+const EXPLORER_ENTRIES = [
+  { entry: "small.txt", type: "FILE" },
+  { entry: "Games", type: "DIRECTORY" },
+  { entry: "big.iso", type: "FILE" },
+  { entry: "Archive", type: "DIRECTORY" },
+  { entry: "unknown.bin", type: "FILE" },
+  { entry: "Player.app", type: "DIRECTORY" },
+  { entry: "medium.zip", type: "FILE" }
+];
+const EXPLORER_STATS = new Map([
+  ["small.txt", { size: 12, modifiedAt: 3000 }],
+  ["Games", { size: 4096, modifiedAt: 1000 }],
+  ["big.iso", { size: 4_000_000_000, modifiedAt: 1000 }],
+  ["Archive", { size: 4096, modifiedAt: 5000 }],
+  ["Player.app", { size: 96, modifiedAt: 4000 }],
+  ["medium.zip", { size: 50_000, modifiedAt: 2000 }]
+]);
+const names = (entries) => entries.map((entry) => entry.entry);
+
+test("sorts explorer entries by size from largest, keeping folders first", () => {
+  assert.deepEqual(names(model.sortEntries(EXPLORER_ENTRIES, "Darwin", { sort: "size", stats: EXPLORER_STATS })), [
+    "Archive", "Games", "big.iso", "medium.zip", "small.txt", "Player.app", "unknown.bin"
+  ]);
+});
+
+test("sorts explorer entries by modification date from newest, keeping folders first", () => {
+  assert.deepEqual(names(model.sortEntries(EXPLORER_ENTRIES, "Darwin", { sort: "date", stats: EXPLORER_STATS })), [
+    "Archive", "Games", "Player.app", "small.txt", "medium.zip", "big.iso", "unknown.bin"
+  ]);
+});
+
+test("falls back to name order without stats or with an unknown sort", () => {
+  const byName = ["Archive", "Games", "big.iso", "medium.zip", "Player.app", "small.txt", "unknown.bin"];
+  assert.deepEqual(names(model.sortEntries(EXPLORER_ENTRIES, "Darwin", { sort: "size" })), byName);
+  assert.deepEqual(names(model.sortEntries(EXPLORER_ENTRIES, "Darwin", { sort: "weird", stats: EXPLORER_STATS })), byName);
+});
+
+test("formats file sizes in Russian units", () => {
+  assert.equal(model.formatFileSize(512), "512 Б");
+  assert.equal(model.formatFileSize(1536), "1,5 КБ");
+  assert.equal(model.formatFileSize(2.4 * 1024 * 1024), "2,4 МБ");
+  assert.equal(model.formatFileSize(150 * 1024 * 1024), "150 МБ");
+  assert.equal(model.formatFileSize(4_000_000_000), "3,7 ГБ");
+  assert.equal(model.formatFileSize(undefined), "");
+});
+
+test("recognizes only http and https links to a site", () => {
+  for (const url of ["https://store.steampowered.com/", "http://localhost:8080/games", "  https://www.youtube.com/watch?v=x  ", "HTTPS://Example.com"]) {
+    assert.equal(model.isWebUrl(url), true, url);
+  }
+  for (const url of ["www.youtube.com", "ftp://example.com", "javascript:alert(1)", "file:///etc/passwd", "https://", "https://exa mple.com", "C:\\Games\\Hades.exe", ""]) {
+    assert.equal(model.isWebUrl(url), false, url);
+  }
+});
+
+test("derives a readable name from a link", () => {
+  assert.equal(model.nameFromPath("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "youtube.com");
+  assert.equal(model.nameFromPath("https://store.steampowered.com/"), "store.steampowered.com");
+  assert.equal(model.normalizeItem({ path: "https://www.twitch.tv/" }).name, "twitch.tv");
+});

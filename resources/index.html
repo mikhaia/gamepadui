@@ -31,6 +31,9 @@
       <symbol id="icon-reorder" viewBox="0 0 24 24"><path d="M8 20V4M4.5 7.5 8 4l3.5 3.5M16 4v16M12.5 16.5 16 20l3.5-3.5"/></symbol>
       <symbol id="icon-to-start" viewBox="0 0 24 24"><path d="M6 5v14M17 18l-6-6 6-6"/></symbol>
       <symbol id="icon-to-end" viewBox="0 0 24 24"><path d="M18 5v14M7 18l6-6-6-6"/></symbol>
+      <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+      <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+      <symbol id="icon-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
       <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></symbol>
     </svg>
     <div class="background" aria-hidden="true">
@@ -131,6 +134,22 @@
               <svg class="icon" aria-hidden="true"><use href="#icon-search"></use></svg>
               <input type="search" id="explorer-filter" placeholder="Поиск в папке" autocomplete="off" spellcheck="false" data-focusable aria-label="Фильтр файлов текущей папки">
             </label>
+            <div class="explorer-sort" id="explorer-sort">
+              <button type="button" class="explorer-sort__button" id="explorer-sort-button" data-action="toggle-explorer-sort" data-focusable aria-haspopup="listbox" aria-expanded="false" aria-controls="explorer-sort-menu" title="Сортировка">
+                <svg class="icon" aria-hidden="true"><use href="#icon-reorder"></use></svg>
+                <span id="explorer-sort-label">По названию</span>
+                <svg class="icon explorer-sort__chevron" aria-hidden="true"><use href="#icon-chevron-down"></use></svg>
+              </button>
+              <div class="explorer-sort__menu" id="explorer-sort-menu" role="listbox" aria-label="Сортировка" aria-hidden="true" data-focus-root>
+                <button type="button" class="explorer-sort__option" role="option" data-action="set-explorer-sort" data-sort="name" data-focusable><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg><span>По названию</span><small>А → Я</small></button>
+                <button type="button" class="explorer-sort__option" role="option" data-action="set-explorer-sort" data-sort="size" data-focusable><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg><span>По размеру</span><small>сначала большие</small></button>
+                <button type="button" class="explorer-sort__option" role="option" data-action="set-explorer-sort" data-sort="date" data-focusable><svg class="icon" aria-hidden="true"><use href="#icon-check"></use></svg><span>По дате изменения</span><small>сначала новые</small></button>
+              </div>
+            </div>
+            <div class="view-switch" role="radiogroup" aria-label="Вид">
+              <button type="button" class="view-switch__option is-active" data-action="set-explorer-view" data-explorer-view="tiles" role="radio" aria-checked="true" aria-label="Плитка" title="Плитка" data-focusable><svg class="icon" aria-hidden="true"><use href="#icon-library"></use></svg></button>
+              <button type="button" class="view-switch__option" data-action="set-explorer-view" data-explorer-view="list" role="radio" aria-checked="false" aria-label="Список" title="Список" data-focusable><svg class="icon" aria-hidden="true"><use href="#icon-list"></use></svg></button>
+            </div>
           </div>
           <div class="file-grid" id="explorer-grid"></div>
         </section>
@@ -166,7 +185,7 @@
     </main>
 
     <div class="scrim" id="system-scrim" hidden></div>
-    <aside class="system-panel" id="system-panel" aria-label="Системное меню" aria-hidden="true">
+    <aside class="system-panel" id="system-panel" aria-label="Системное меню" aria-hidden="true" data-focus-root>
       <div class="system-panel__header">
         <div>
           <p class="eyebrow">GAMEPAD UI</p>
@@ -207,7 +226,7 @@
     </aside>
 
     <div class="scrim" id="apps-scrim" hidden></div>
-    <aside class="apps-panel" id="apps-panel" aria-label="Приложения" aria-hidden="true">
+    <aside class="apps-panel" id="apps-panel" aria-label="Приложения" aria-hidden="true" data-focus-root>
       <div class="apps-panel__header">
         <div>
           <p class="eyebrow" id="apps-eyebrow">ПРИЛОЖЕНИЯ</p>
@@ -249,6 +268,7 @@
     <script src="/js/apps.js"></script>
     <script src="/js/platform.js"></script>
     <script src="/js/displays.js"></script>
+    <script src="/js/folder-sizes.js"></script>
     <script src="/js/navigation.js"></script>
     <script src="/js/sound.js"></script>
     <script src="/js/main.js"></script>

@@ -22,6 +22,8 @@
     "os.showFolderDialog",
     "os.showMessageBox",
     "os.execCommand",
+    "os.spawnProcess",
+    "os.updateSpawnedProcess",
     "net.request",
     "storage.*",
     "filesystem.readDirectory",

@@ -47,3 +47,14 @@ test("reveals a found file in Finder, Windows Explorer or the Linux file manager
   const script = Buffer.from(windows.split(" ").pop(), "base64").toString("utf16le");
   assert.equal(script, `Start-Process -FilePath 'explorer.exe' -ArgumentList '/select,"C:\\Users\\Player\\Downloads\\Bob''s Game.exe"'`);
 });
+
+test("opens links in the default browser without running anything from the address", () => {
+  const tricky = "https://example.com/$(touch${IFS}/tmp/pwned)/`id`/it's";
+  assert.equal(platform.buildLaunchCommand({ path: tricky, arguments: "--fullscreen" }, "Darwin"), `open 'https://example.com/$(touch\${IFS}/tmp/pwned)/\`id\`/it'"'"'s'`);
+  assert.throws(() => platform.buildLaunchCommand({ path: "https://exa mple.com" }, "Darwin"), /Некорректная ссылка/);
+  assert.equal(platform.buildLaunchCommand({ path: "https://store.steampowered.com/" }, "Linux"), "xdg-open 'https://store.steampowered.com/'");
+  const windows = platform.buildLaunchCommand({ path: "https://www.youtube.com/watch?v=x&t=1", arguments: "--ignored" }, "Windows");
+  const script = Buffer.from(windows.split(" ").pop(), "base64").toString("utf16le");
+  assert.equal(script, "Start-Process -FilePath 'https://www.youtube.com/watch?v=x&t=1'");
+  assert.throws(() => platform.buildUrlCommand("javascript:alert(1)", "Darwin"));
+});

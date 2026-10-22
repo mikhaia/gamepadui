@@ -1,6 +1,8 @@
 (function initPlatform(globalScope) {
   "use strict";
 
+  const Model = globalScope.GamePadModel || (typeof require === "function" ? require("./model.js") : null);
+
   function powerShellLiteral(value) {
     return `'${String(value).replace(/'/g, "''")}'`;
   }
@@ -59,9 +61,23 @@
     return index > 0 ? value.slice(0, index) : "";
   }
 
+  // Ссылку открывает браузер по умолчанию. Адрес передаётся только в кавычках, которые оболочка
+  // не раскрывает (в отличие от Neutralino.os.open, где $(...) в ссылке выполнился бы как команда).
+  function buildUrlCommand(url, osName) {
+    const target = String(url || "").trim();
+    if (!Model.isWebUrl(target)) throw new Error("Некорректная ссылка");
+    if (osName === "Windows") {
+      return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(`Start-Process -FilePath ${powerShellLiteral(target)}`)}`;
+    }
+    if (osName === "Darwin") return `open ${shellQuote(target)}`;
+    return `xdg-open ${shellQuote(target)}`;
+  }
+
   function buildLaunchCommand(item, osName) {
     const path = String(item.path || "").trim();
     if (!path) throw new Error("Не указан путь к приложению");
+    // Всё, что начинается с http(s), — ссылка: никогда не запускаем её как файл.
+    if (/^https?:/i.test(path)) return buildUrlCommand(path, osName);
     const args = splitArguments(item.arguments);
 
     if (osName === "Windows") {
@@ -140,8 +156,10 @@
     buildLaunchCommand,
     buildOpenCommand,
     buildRevealCommand,
+    buildUrlCommand,
     buildSystemCommand,
     encodePowerShell,
+    powerShellLiteral,
     shellQuote,
     splitArguments
   };
