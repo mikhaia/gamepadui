@@ -37,6 +37,10 @@
       <symbol id="icon-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
       <symbol id="icon-pin" viewBox="0 0 24 24"><path d="M9 4h6l-.8 5.2L17 12v1.5H7V12l2.8-2.8L9 4Z"/><path d="M12 13.5V20"/></symbol>
       <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></symbol>
+      <symbol id="icon-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M3.5 12h17M12 3.5c2.4 2.3 3.6 5.1 3.6 8.5s-1.2 6.2-3.6 8.5M12 3.5C9.6 5.8 8.4 8.6 8.4 12s1.2 6.2 3.6 8.5"/></symbol>
+      <symbol id="icon-link" viewBox="0 0 24 24"><path d="M10.2 13.8a3.6 3.6 0 0 0 5.1 0l3.2-3.2a3.6 3.6 0 0 0-5.1-5.1l-1.1 1.1"/><path d="M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-3.2 3.2a3.6 3.6 0 0 0 5.1 5.1l1.1-1.1"/></symbol>
+      <symbol id="icon-terminal" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="m7.5 9.5 3 2.5-3 2.5M12.5 15h4"/></symbol>
+      <symbol id="icon-app-window" viewBox="0 0 24 24"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M3 9h18M6.5 6.8h.01M9 6.8h.01M11.5 6.8h.01"/></symbol>
     </svg>
     <div class="background" aria-hidden="true">
       <div class="background__image" id="background-image"></div>
@@ -122,9 +126,17 @@
               <p class="eyebrow">ФАЙЛОВАЯ СИСТЕМА</p>
               <h2 id="explorer-title">Проводник</h2>
             </div>
-            <button class="action-button" data-action="choose-folder" data-focusable>
-              <svg class="icon"><use href="#icon-folder"></use></svg> Выбрать папку
-            </button>
+            <div class="view-heading__actions">
+              <label class="inline-switch" id="explorer-folder-sizes-switch">
+                <input type="checkbox" id="explorer-folder-sizes" data-focusable aria-describedby="explorer-folder-sizes-hint">
+                <span class="toggle" aria-hidden="true"><i></i></span>
+                <span>Размер папок</span>
+                <span class="visually-hidden" id="explorer-folder-sizes-hint">Считать размер вложенных папок в фоне</span>
+              </label>
+              <button class="action-button" data-action="choose-folder" data-focusable>
+                <svg class="icon"><use href="#icon-folder"></use></svg> Выбрать папку
+              </button>
+            </div>
           </div>
           <div class="explorer-layout">
           <aside class="explorer-pins" aria-label="Закреплённые папки">
@@ -284,6 +296,8 @@
     <script src="/js/folder-sizes.js"></script>
     <script src="/js/navigation.js"></script>
     <script src="/js/sound.js"></script>
+    <script src="/js/image-cache.js"></script>
+    <script src="/js/app-icons.js"></script>
     <script src="/js/main.js"></script>
   </body>
 </html>

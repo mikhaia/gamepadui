@@ -9,6 +9,8 @@
   const FolderSizes = globalScope.GamePadFolderSizes;
   const Navigation = globalScope.GamePadNavigation;
   const Sound = globalScope.GamePadSound;
+  const ImageCache = globalScope.GamePadImageCache;
+  const AppIcons = globalScope.GamePadAppIcons;
   const STORAGE_KEY = "gamepad-ui-state-v1";
   const DEFAULT_STATE = {
     library: [],
@@ -24,6 +26,9 @@
       explorerSort: "name",
       explorerView: "tiles",
       explorerPins: null,
+      // Размер папок считается только по явному включению: подсчёт нагружает диск, а в macOS
+      // может вызвать запросы доступа к «Документам», «Рабочему столу» и «Загрузкам».
+      explorerFolderSizes: false,
       display: null,
       searchPaths: []
     }
@@ -64,7 +69,27 @@
   let selectedExplorerPath = "";
   let toastTimer = 0;
   let nativeReady = false;
-  let blobUrls = [];
+  let backgroundRequestId = 0;
+  let shownBackgroundPath = null;
+  let shownBackgroundUrl = "";
+  const imageCacheOptions = {
+    read: async (path) => new Blob([await globalScope.Neutralino.filesystem.readBinaryFile(path)], {
+      type: IMAGE_MIME_TYPES[Model.extensionOf(path)] || "application/octet-stream"
+    }),
+    createUrl: (blob) => URL.createObjectURL(blob),
+    revokeUrl: (url) => URL.revokeObjectURL(url)
+  };
+  // Обложки и фон: ненужные картинки выгружаются после каждой перерисовки библиотеки.
+  const imageCache = ImageCache.createImageCache(imageCacheOptions);
+  // Значки приложений: маленькие, живут до конца сеанса.
+  const iconImages = ImageCache.createImageCache(imageCacheOptions);
+  let iconLoader = null;
+  let iconObserver = null;
+  const observedIconSlots = new Set();
+  // Фоновые процессы (подсчёт размеров папок, извлечение значков) получают события по своему номеру.
+  const processHandlers = new Map();
+  const earlyProcessEvents = [];
+  let processesStarting = 0;
   let appsList = [];
   let appsStatus = "idle";
   let appsFilter = "";
@@ -87,7 +112,8 @@
       "library-search-results", "section-tabs", "system-panel", "system-scrim", "modal-layer", "modal",
       "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
       "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow", "explorer-sort", "explorer-sort-button",
-      "explorer-sort-label", "explorer-sort-menu", "explorer-pins", "explorer-pin-current"
+      "explorer-sort-label", "explorer-sort-menu", "explorer-pins", "explorer-pin-current",
+      "explorer-folder-sizes", "explorer-folder-sizes-switch"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
 
@@ -104,7 +130,7 @@
     try {
       globalScope.Neutralino.init();
       globalScope.Neutralino.events.on("windowClose", async () => {
-        await stopFolderSizeJob();
+        await stopBackgroundProcesses();
         globalScope.Neutralino.app.exit();
       });
       nativeReady = true;
@@ -172,26 +198,23 @@
     return [...String(value)].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
   }
 
-  function revokeBlobUrls() {
-    blobUrls.forEach((url) => URL.revokeObjectURL(url));
-    blobUrls = [];
-  }
-
-  async function localImageUrl(path) {
+  // Картинки с диска берутся из кеша: файл читается один раз, пока его путь где-то используется.
+  // options.fresh — перечитать файл (пользователь выбрал его заново).
+  async function localImageUrl(path, options) {
     if (!path) return "";
-    if (/^(https?:|data:|blob:)/i.test(path)) return path;
-    if (!hasNativeApi()) return "";
+    if (!ImageCache.isRemoteImage(path) && !hasNativeApi()) return "";
     try {
-      const buffer = await globalScope.Neutralino.filesystem.readBinaryFile(path);
-      const extension = Model.extensionOf(path);
-      const blob = new Blob([buffer], { type: IMAGE_MIME_TYPES[extension] || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      blobUrls.push(url);
-      return url;
+      return await imageCache.get(path, options);
     } catch (error) {
       console.warn(`Unable to read image: ${path}`, error);
       return "";
     }
+  }
+
+  // Картинки, которые сейчас на экране или вот-вот появятся; остальные выгружаются из кеша.
+  function imagePathsInUse() {
+    const previews = [...document.querySelectorAll("[data-cover-preview]")].map((preview) => preview.dataset.requestedPath);
+    return [...state.library.map((item) => item.coverPath), state.settings.backgroundPath, shownBackgroundPath, ...previews];
   }
 
   function coverValueForSource(form, source) {
@@ -201,7 +224,7 @@
     return "";
   }
 
-  async function updateCoverPreview(form, path) {
+  async function updateCoverPreview(form, path, options) {
     const preview = form.querySelector("[data-cover-preview]");
     const image = preview?.querySelector("img");
     const message = preview?.querySelector("span");
@@ -216,7 +239,7 @@
       return;
     }
 
-    const imageUrl = await localImageUrl(normalizedPath);
+    const imageUrl = await localImageUrl(normalizedPath, options);
     if (preview.dataset.requestedPath !== normalizedPath) return;
     if (!imageUrl) {
       message.textContent = hasNativeApi() ? "Не удалось открыть изображение" : "Локальный файл будет показан в приложении";
@@ -268,15 +291,39 @@
       </button>`).join("");
   }
 
-  async function applySettings() {
+  async function applySettings({ refreshBackground = false } = {}) {
     document.body.dataset.theme = state.settings.theme || "light";
     document.body.dataset.accent = state.settings.accent || "plum";
     Sound.setEnabled(state.settings.soundEnabled !== false);
     elements["background-wash"].style.setProperty("--background-dim", state.settings.backgroundDim / 100);
     elements["background-image"].style.setProperty("--background-blur", `${state.settings.backgroundBlur}px`);
-    const backgroundUrl = await localImageUrl(state.settings.backgroundPath);
-    elements["background-image"].style.backgroundImage = backgroundUrl ? `url("${backgroundUrl}")` : "";
-    document.body.classList.toggle("has-custom-background", Boolean(backgroundUrl));
+    await applyBackground({ fresh: refreshBackground });
+  }
+
+  // Фон читается с диска, только когда меняется путь, файл выбран заново или прошлое чтение не удалось.
+  async function applyBackground({ fresh = false } = {}) {
+    const path = state.settings.backgroundPath || "";
+    if (!fresh && path === shownBackgroundPath && (shownBackgroundUrl || !path)) return;
+    const requestId = ++backgroundRequestId;
+    const url = await localImageUrl(path, { fresh });
+    if (url) await decodeImage(url);
+    if (requestId !== backgroundRequestId) return;
+    shownBackgroundPath = path;
+    shownBackgroundUrl = url;
+    elements["background-image"].style.backgroundImage = url ? `url("${url}")` : "";
+    document.body.classList.toggle("has-custom-background", Boolean(url));
+    imageCache.retain(imagePathsInUse());
+  }
+
+  // Новый фон ставим уже раскодированным, чтобы при смене не мигал пустой экран.
+  async function decodeImage(url) {
+    const image = new Image();
+    image.src = url;
+    try {
+      await image.decode();
+    } catch {
+      // Битый файл — фон всё равно применяется, как и раньше.
+    }
   }
 
   function emptyStateMarkup(kind) {
@@ -294,11 +341,17 @@
 
   function itemCardMarkup(item) {
     const selected = selectedItemId === item.id ? " is-selected" : "";
+    // Уже прочитанная обложка вставляется сразу, без повторного чтения и без мигания.
+    const coverUrl = item.coverPath ? imageCache.peek(item.coverPath) : "";
+    // Без обложки над инициалами показывается значок приложения или значок по типу.
     return `
       <button class="game-card color-${colorIndex(item.id)}${selected}" data-item-id="${escapeHtml(item.id)}" data-focusable>
         <span class="game-card__art">
-          <span class="game-card__initials">${escapeHtml(initials(item.name))}</span>
-          ${item.coverPath ? `<img data-cover-path="${escapeHtml(item.coverPath)}" alt="">` : ""}
+          <span class="game-card__mark">
+            ${item.coverPath ? "" : cardIconMarkup(item.path)}
+            <span class="game-card__initials">${escapeHtml(initials(item.name))}</span>
+          </span>
+          ${item.coverPath ? `<img data-cover-path="${escapeHtml(item.coverPath)}"${coverUrl ? ` src="${escapeHtml(coverUrl)}" class="is-loaded"` : ""} alt="">` : ""}
           ${item.favorite ? `<span class="game-card__favorite" aria-label="В избранном">${icon("star")}</span>` : ""}
           <span class="game-card__play">${icon("play")}</span>
         </span>
@@ -310,7 +363,7 @@
   }
 
   async function hydrateCoverImages(root) {
-    const images = [...root.querySelectorAll("img[data-cover-path]")];
+    const images = [...root.querySelectorAll("img[data-cover-path]:not([src])")];
     await Promise.all(images.map(async (image) => {
       const url = await localImageUrl(image.dataset.coverPath);
       if (url) {
@@ -321,7 +374,6 @@
   }
 
   function renderLibrary() {
-    revokeBlobUrls();
     const favorites = Model.orderFavorites(state.library, state.favoriteOrder);
     elements["favorites-grid"].innerHTML = favorites.length
       ? favorites.map(itemCardMarkup).join("")
@@ -331,7 +383,9 @@
       : emptyStateMarkup("library");
     hydrateCoverImages(elements["favorites-grid"]);
     hydrateCoverImages(elements["library-grid"]);
-    applySettings();
+    imageCache.retain(imagePathsInUse());
+    watchAppIcons(elements["favorites-grid"]);
+    watchAppIcons(elements["library-grid"]);
     if (elements["library-search-results"]) renderDirectorySearch();
   }
 
@@ -375,20 +429,22 @@
       ? detailMarkup([typeLabel, size, modified ? explorerFullDate.format(modified) : ""])
       : detailMarkup([
         typeLabel,
-        sort === "size" ? size : "",
+        // В плитке размер файлов виден при сортировке по размеру, а размер папок — когда включён их подсчёт.
+        sort === "size" || item.type === "DIRECTORY" ? size : "",
         sort === "date" && modified ? explorerShortDate.format(modified) : "",
         launchable ? "Можно добавить" : ""
       ]);
-    const visual = list && !directory
+    const appIcon = launchable ? appIconSlot(path) : appIconSlot("");
+    const visual = appIcon.image || (list && !directory
       ? `<span class="file-card__type">${escapeHtml((extension || (applicationBundle ? "APP" : "FILE")).slice(0, 4))}</span>`
-      : icon(directory ? "folder" : "file");
+      : icon(directory ? "folder" : "file"));
     const existing = launchable && state.library.some((libraryItem) => libraryItem.path === path);
     const badge = list && launchable
       ? `<span class="file-card__badge search-result-row__badge${existing ? " is-existing" : ""}">${existing ? "Уже в библиотеке" : "Можно добавить"}</span>`
       : "";
     return `
       <button class="file-card${selected}" title="${escapeHtml(item.entry)}" data-entry-name="${escapeHtml(item.entry)}" data-entry-type="${item.type}" data-entry-path="${escapeHtml(path)}" data-focusable>
-        <span class="file-card__visual ${directory ? "is-folder" : "is-file"}${applicationBundle ? " is-application" : ""}" aria-hidden="true">
+        <span class="file-card__visual ${directory ? "is-folder" : "is-file"}${applicationBundle ? " is-application" : ""}${appIcon.className}"${appIcon.attrs} aria-hidden="true">
           ${visual}
         </span>
         <span class="file-card__info">
@@ -399,9 +455,19 @@
       </button>`;
   }
 
+  function explorerFolderSizesEnabled() {
+    return state.settings.explorerFolderSizes === true;
+  }
+
   function explorerFolderSizesNeeded() {
-    return hasNativeApi() && (explorerSortKey() === "size" || explorerViewMode() === "list")
-      && Boolean(FolderSizes.buildCommand(explorerPath, getOsName()));
+    return hasNativeApi() && explorerFolderSizesEnabled() && Boolean(FolderSizes.buildCommand(explorerPath, getOsName()));
+  }
+
+  async function setExplorerFolderSizes(enabled) {
+    state.settings.explorerFolderSizes = Boolean(enabled);
+    await saveState();
+    renderExplorer();
+    syncFolderSizes();
   }
 
   function knownFolderSize(path) {
@@ -450,14 +516,35 @@
 
   function handleSpawnedProcess(event) {
     const detail = event.detail || {};
-    const job = folderSizeJob;
-    if (!job) return;
-    // Вывод может прийти раньше, чем spawnProcess вернёт номер процесса, — придерживаем его.
-    if (job.id === null) {
-      job.early.push(detail);
-      return;
+    const handler = processHandlers.get(detail.id);
+    if (handler) {
+      if (detail.action === "exit") processHandlers.delete(detail.id);
+      handler(detail);
+    } else if (processesStarting > 0) {
+      // Вывод может прийти раньше, чем spawnProcess вернёт номер процесса, — придерживаем его.
+      earlyProcessEvents.push(detail);
     }
-    if (detail.id === job.id) handleFolderSizeEvent(job, detail);
+  }
+
+  // Запускает процесс и направляет его события (stdOut, stdErr, exit) в onEvent.
+  async function spawnWithEvents(command, onEvent) {
+    processesStarting += 1;
+    try {
+      const process = await globalScope.Neutralino.os.spawnProcess(command);
+      processHandlers.set(process.id, onEvent);
+      const early = earlyProcessEvents.filter((detail) => detail.id === process.id);
+      early.forEach((detail) => earlyProcessEvents.splice(earlyProcessEvents.indexOf(detail), 1));
+      early.forEach((detail) => handleSpawnedProcess({ detail }));
+      return process;
+    } finally {
+      processesStarting -= 1;
+      if (!processesStarting) earlyProcessEvents.length = 0;
+    }
+  }
+
+  async function stopBackgroundProcesses() {
+    await stopFolderSizeJob();
+    await Promise.all([...processHandlers.keys()].map((id) => globalScope.Neutralino.os.updateSpawnedProcess(id, "exit").catch(() => {})));
   }
 
   async function stopFolderSizeJob(job = folderSizeJob) {
@@ -475,20 +562,22 @@
     if (!command) return;
     if (folderSizeJob) stopFolderSizeJob(folderSizeJob);
     // Задание становится текущим сразу, чтобы интерфейс тут же показал «считаю…».
-    const job = { path, id: null, early: [], timeout: 0, cancelled: false, parser: FolderSizes.createParser(getOsName(), path) };
+    const job = { path, id: null, timeout: 0, cancelled: false, parser: FolderSizes.createParser(getOsName(), path) };
     folderSizeJob = job;
     try {
-      const process = await globalScope.Neutralino.os.spawnProcess(command);
+      const process = await spawnWithEvents(command, (detail) => {
+        if (!job.cancelled) handleFolderSizeEvent(job, detail);
+      });
+      job.id = process.id;
       if (folderSizeJob !== job || job.cancelled) {
         await globalScope.Neutralino.os.updateSpawnedProcess(process.id, "exit").catch(() => {});
         return;
       }
-      job.id = process.id;
       job.timeout = setTimeout(() => {
-        stopFolderSizeJob();
+        if (folderSizeJob !== job) return;
+        stopFolderSizeJob(job);
         if (path === explorerPath) scheduleFolderSizeRender();
       }, FOLDER_SIZE_JOB_TIMEOUT_MS);
-      job.early.splice(0).filter((detail) => detail.id === job.id).forEach((detail) => handleFolderSizeEvent(job, detail));
     } catch (error) {
       console.warn("Unable to measure folder sizes", error);
       finishFolderSizeJob(job);
@@ -534,6 +623,10 @@
       button.setAttribute("aria-checked", String(active));
     });
     elements["explorer-grid"].classList.toggle("is-list", view === "list");
+    elements["explorer-folder-sizes"].checked = explorerFolderSizesEnabled();
+    elements["explorer-folder-sizes-switch"].title = getOsName() === "Darwin"
+      ? "Размер папок считается в фоне. macOS может спросить разрешение на доступ к «Документам», «Рабочему столу» и «Загрузкам»."
+      : "Размер папок считается в фоне; на больших дисках это занимает время.";
   }
 
   // Neutralino не отдаёт размер и дату в readDirectory, поэтому спрашиваем их по каждому элементу,
@@ -607,6 +700,7 @@
 
   function explorerSortStats() {
     const stats = new Map(explorerStats);
+    if (!explorerFolderSizesNeeded()) return stats;
     explorerEntries.forEach((entry) => {
       if (entry.type !== "DIRECTORY") return;
       const cached = knownFolderSize(Model.joinPath(explorerPath, entry.entry, getOsName()));
@@ -636,6 +730,7 @@
       : filtering && explorerEntries.length
         ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("search")}</div><h3>Ничего не найдено</h3><p>Попробуйте изменить запрос для этой папки.</p></div>`
         : `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("folder")}</div><h3>Папка пуста</h3><p>Здесь нет файлов или вложенных папок.</p></div>`;
+    watchAppIcons(elements["explorer-grid"]);
     if (focusedPath) {
       const card = [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")].find((element) => element.dataset.entryPath === focusedPath);
       if (card) Navigation.setFocus(card);
@@ -930,6 +1025,7 @@
     updatePathsAfterRename(path, newPath);
     await saveState();
     renderLibrary();
+    applyBackground();
     renderExplorerPins();
     await readExplorerDirectory(explorerPath, { focusEntry: newName });
     returnFocusTarget = explorerCard(newName) || returnFocusTarget;
@@ -1056,11 +1152,12 @@
         ? { label: "Уже в библиотеке", className: " is-existing" }
         : { label: "Можно добавить", className: "" };
     const revealLabel = fileManagerLabel();
+    const appIcon = launchable ? appIconSlot(result.path) : appIconSlot("");
     return `
       <div class="search-result-wrap">
       <button class="file-card search-result-row${selected}" title="${escapeHtml(result.path)}" data-entry-name="${escapeHtml(result.name)}" data-entry-type="${result.type}" data-entry-path="${escapeHtml(result.path)}" data-focusable>
-        <span class="file-card__visual is-file${applicationBundle ? " is-application" : ""}" aria-hidden="true">
-          <span class="file-card__type">${escapeHtml(extension.slice(0, 4))}</span>
+        <span class="file-card__visual is-file${applicationBundle ? " is-application" : ""}${appIcon.className}"${appIcon.attrs} aria-hidden="true">
+          ${appIcon.image || `<span class="file-card__type">${escapeHtml(extension.slice(0, 4))}</span>`}
         </span>
         <span class="file-card__info">
           <span class="file-card__name">${escapeHtml(Model.nameFromPath(result.name))}</span>
@@ -1181,6 +1278,7 @@
           `Сейчас ищутся только приложения (${launchableExtensionsText()}). Чтобы найти документы, архивы и другие файлы, включите «Все файлы».`,
           `<button class="action-button action-button--primary" data-action="set-search-scope" data-scope="all" data-focusable>${icon("search")} Искать все файлы</button>`
         );
+    watchAppIcons(elements["library-search-results"]);
   }
 
   async function setSearchScope(scope) {
@@ -1370,6 +1468,109 @@
     return elements["apps-panel"].classList.contains("is-open");
   }
 
+  // Настоящие значки приложений (.app в macOS; .exe, .lnk, .url в Windows) вместо инициалов и типа файла.
+  async function setupAppIcons() {
+    const osName = getOsName();
+    if (!hasNativeApi() || !AppIcons.supportsIcons(osName)) return;
+    try {
+      const cachePath = await globalScope.Neutralino.os.getPath("cache");
+      if (!cachePath) return;
+      iconLoader = AppIcons.createIconLoader({
+        osName,
+        cacheDir: AppIcons.cacheDirectory(cachePath, osName),
+        stat: (file) => globalScope.Neutralino.filesystem.getStats(file),
+        readUrl: (file, fresh) => iconImages.get(file, { fresh }),
+        spawn: spawnWithEvents,
+        write: (id, text) => globalScope.Neutralino.os.updateSpawnedProcess(id, "stdIn", text),
+        end: (id) => globalScope.Neutralino.os.updateSpawnedProcess(id, "stdInEnd"),
+        onIcon: showAppIcon,
+        warn: (...args) => console.warn(...args)
+      });
+    } catch (error) {
+      console.warn("App icons are unavailable", error);
+    }
+  }
+
+  const DEFAULT_ICON_SYMBOLS = { web: "globe", link: "link", script: "terminal", app: "app-window" };
+
+  function defaultIconMarkup(kind) {
+    const safeKind = DEFAULT_ICON_SYMBOLS[kind] ? kind : "app";
+    return `<span class="default-app-icon default-app-icon--${safeKind}">${icon(DEFAULT_ICON_SYMBOLS[safeKind])}</span>`;
+  }
+
+  // Плитка без обложки: настоящий значок, а если его нет или быть не может — значок по типу (сайт, программа, скрипт).
+  function cardIconMarkup(path) {
+    const kind = AppIcons.defaultIconKind(path);
+    const slot = appIconSlot(path);
+    if (!slot.attrs) return `<span class="game-card__app-icon has-default-icon" aria-hidden="true">${defaultIconMarkup(kind)}</span>`;
+    if (slot.image) return `<span class="game-card__app-icon has-app-icon"${slot.attrs} aria-hidden="true">${slot.image}</span>`;
+    const missing = iconLoader.status(path) === "none";
+    return `<span class="game-card__app-icon${missing ? " has-default-icon" : ""}"${slot.attrs} data-fallback-icon="${kind}" aria-hidden="true">${missing ? defaultIconMarkup(kind) : ""}</span>`;
+  }
+
+  function appIconImage(url) {
+    return `<img class="app-icon" src="${escapeHtml(url)}" alt="" draggable="false">`;
+  }
+
+  // Уже извлечённый значок вставляется сразу; для остальных запоминаем путь — значок подставится, когда будет готов.
+  function appIconSlot(path) {
+    if (!iconLoader || !AppIcons.wantsIcon(path, getOsName())) return { attrs: "", className: "", image: "" };
+    const url = iconLoader.peek(path);
+    return {
+      attrs: ` data-app-icon="${escapeHtml(path)}"`,
+      className: url ? " has-app-icon" : "",
+      image: url ? appIconImage(url) : ""
+    };
+  }
+
+  function showAppIcon(path, url) {
+    const osName = getOsName();
+    const key = AppIcons.iconKey(path, osName);
+    document.querySelectorAll("[data-app-icon]").forEach((slot) => {
+      if (AppIcons.iconKey(slot.dataset.appIcon, osName) !== key) return;
+      if (!url) {
+        // Значка нет: плитки показывают значок по типу, сайдбар и Проводник оставляют инициалы и тип файла.
+        if (slot.dataset.fallbackIcon && !slot.classList.contains("has-app-icon")) {
+          slot.innerHTML = defaultIconMarkup(slot.dataset.fallbackIcon);
+          slot.classList.add("has-default-icon");
+        }
+        return;
+      }
+      const image = slot.querySelector("img.app-icon");
+      if (image) {
+        image.src = url;
+        return;
+      }
+      slot.innerHTML = appIconImage(url);
+      slot.classList.remove("has-default-icon");
+      slot.classList.add("has-app-icon");
+    });
+  }
+
+  // Значки извлекаются только для строк, которые видны (или вот-вот появятся) на экране.
+  function watchAppIcons(root) {
+    if (!iconLoader || typeof IntersectionObserver === "undefined") return;
+    if (!iconObserver) {
+      iconObserver = new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          iconObserver.unobserve(entry.target);
+          observedIconSlots.delete(entry.target);
+          iconLoader.request(entry.target.dataset.appIcon);
+        });
+      }, { rootMargin: "240px" });
+    }
+    observedIconSlots.forEach((slot) => {
+      if (slot.isConnected) return;
+      iconObserver.unobserve(slot);
+      observedIconSlots.delete(slot);
+    });
+    root.querySelectorAll("[data-app-icon]:not(.has-app-icon):not(.has-default-icon)").forEach((slot) => {
+      observedIconSlots.add(slot);
+      iconObserver.observe(slot);
+    });
+  }
+
   function appsRootLabel() {
     return getOsName() === "Windows" ? "Главное меню" : "Программы";
   }
@@ -1377,10 +1578,11 @@
   function appRowMarkup(app) {
     const favorite = Boolean(state.library.find((item) => item.path === app.path)?.favorite);
     const favoriteLabel = favorite ? "Убрать из избранного" : "Добавить в избранное";
+    const appIcon = appIconSlot(app.path);
     return `
       <div class="app-row-wrap">
         <button class="app-row" data-app-path="${escapeHtml(app.path)}" title="${escapeHtml(app.path)}" data-focusable>
-          <span class="app-row__icon" aria-hidden="true">${escapeHtml(initials(app.name))}</span>
+          <span class="app-row__icon${appIcon.className}"${appIcon.attrs} aria-hidden="true">${appIcon.image || escapeHtml(initials(app.name))}</span>
           <span class="app-row__text"><b>${escapeHtml(app.name)}</b><small>${escapeHtml(app.group || appsRootLabel())}</small></span>
         </button>
         <button type="button" class="app-row__favorite${favorite ? " is-active" : ""}" data-app-favorite="${escapeHtml(app.path)}" tabindex="-1" aria-label="${favoriteLabel}" title="${favoriteLabel}">${icon("star")}</button>
@@ -1420,6 +1622,7 @@
       : appsList.length
         ? placeholder("search", "Ничего не найдено", "Попробуйте изменить запрос.")
         : placeholder("library", "Приложения не найдены", "В папках с приложениями нет ярлыков.");
+    watchAppIcons(elements["apps-list"]);
   }
 
   function focusAppsPanel() {
@@ -2079,7 +2282,7 @@
           state.settings.backgroundBlur = Number(formData.get("backgroundBlur"));
           state.settings.soundEnabled = formData.get("soundEnabled") === "on";
           await saveState();
-          await applySettings();
+          await applySettings({ refreshBackground: form.dataset.backgroundPicked === "true" });
           queueDirectorySearch();
           closeModal();
           showToast("Настройки сохранены");
@@ -2210,7 +2413,7 @@
         if (path) {
           form.elements.coverFilePath.value = path;
           form.elements.coverPath.value = path;
-          updateCoverPreview(form, path);
+          updateCoverPreview(form, path, { fresh: true });
         }
         break;
       }
@@ -2240,7 +2443,10 @@
       case "pick-background": {
         const form = target.closest("form");
         const path = await chooseFile([{ name: "Изображения", extensions: ["jpg", "jpeg", "png", "webp"] }], form.elements.backgroundPath.value);
-        if (path) form.elements.backgroundPath.value = path;
+        if (path) {
+          form.elements.backgroundPath.value = path;
+          form.dataset.backgroundPicked = "true";
+        }
         break;
       }
       case "clear-background": target.closest("form").elements.backgroundPath.value = ""; break;
@@ -2546,6 +2752,13 @@
   }
 
   function bindEvents() {
+    elements["explorer-folder-sizes"].addEventListener("change", (event) => setExplorerFolderSizes(event.currentTarget.checked));
+    // Enter переключает так же, как пробел и кнопка A на геймпаде.
+    elements["explorer-folder-sizes"].addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      event.currentTarget.click();
+    });
     if (hasNativeApi()) {
       globalScope.Neutralino.events.on("windowBlur", () => setWindowActive(false));
       globalScope.Neutralino.events.on("windowFocus", () => setWindowActive(true));
@@ -2619,6 +2832,7 @@
     cacheElements();
     await initializeNativeApi();
     await loadState();
+    await setupAppIcons();
     const systemFolders = await resolveSystemFolders();
     if (!Array.isArray(state.settings.explorerPins)) {
       state.settings.explorerPins = systemFolders.reduce((pins, path) => Model.pinFolder(pins, path, getOsName()), []);

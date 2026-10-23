@@ -1292,32 +1292,59 @@ p {
   outline-offset: 3px;
 }
 
+/* Выключено: пустая дорожка с обводкой и маленький приглушённый бегунок слева.
+   Включено: дорожка цвета акцента и большой бегунок справа с галочкой. */
 .toggle {
   position: relative;
-  width: 38px;
-  height: 22px;
+  flex: none;
+  width: 42px;
+  height: 24px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.14);
-  transition: background 160ms ease;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.32);
+  transition: background 160ms ease, box-shadow 160ms ease;
 }
 
 .toggle i {
   position: absolute;
-  top: 4px;
-  left: 4px;
-  width: 14px;
-  height: 14px;
+  top: 6px;
+  left: 6px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  background: white;
-  transition: transform 160ms ease;
+  background: rgba(255, 255, 255, 0.5);
+  transition: top 160ms ease, left 160ms ease, width 160ms ease, height 160ms ease, background 160ms ease;
 }
 
-.toggle-row input:checked + .toggle {
+.toggle i::after {
+  content: "";
+  position: absolute;
+  top: 3.5px;
+  left: 6.5px;
+  width: 3.5px;
+  height: 7px;
+  border: solid var(--accent);
+  border-width: 0 2px 2px 0;
+  opacity: 0;
+  transform: rotate(45deg);
+  transition: opacity 120ms ease;
+}
+
+:is(.toggle-row, .inline-switch) input:checked + .toggle {
   background: var(--accent);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 
-.toggle-row input:checked + .toggle i {
-  transform: translateX(16px);
+:is(.toggle-row, .inline-switch) input:checked + .toggle i {
+  top: 3px;
+  left: 21px;
+  width: 18px;
+  height: 18px;
+  background: white;
+}
+
+:is(.toggle-row, .inline-switch) input:checked + .toggle i::after {
+  opacity: 1;
 }
 
 .toggle-row > span:last-child {
@@ -2033,11 +2060,12 @@ button {
 }
 
 .toggle {
-  background: rgba(92, 70, 82, 0.2);
+  background: rgba(92, 70, 82, 0.08);
+  box-shadow: inset 0 0 0 1.5px rgba(92, 70, 82, 0.4);
 }
 
-.toggle-row input:checked + .toggle {
-  background: var(--accent);
+.toggle i {
+  background: rgba(92, 70, 82, 0.55);
 }
 
 .action-list__item {
@@ -3040,6 +3068,89 @@ body[data-theme="dark"] .display-choice:has(input:checked) .display-choice__badg
   color: #1c171b;
 }
 
+/* «Размер папок» switch in the Explorer heading. */
+.view-heading__actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.inline-switch {
+  position: relative;
+  display: inline-flex;
+  min-height: 44px;
+  padding: 0 15px 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.5);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 620;
+  white-space: nowrap;
+  align-items: center;
+  gap: 10px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
+  backdrop-filter: blur(16px);
+}
+
+/* Невидимый чекбокс растянут на весь переключатель: по нему кликают и на него встаёт фокус геймпада. */
+.inline-switch input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  cursor: pointer;
+  opacity: 0;
+}
+
+/* Включённый переключатель подсвечивается целиком, чтобы состояние читалось издалека. */
+.inline-switch:has(input:checked) {
+  border-color: rgba(var(--accent-rgb), 0.55);
+  background: rgba(var(--accent-rgb), 0.13);
+}
+
+.inline-switch:has(input.is-focused),
+.inline-switch:has(input:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+body[data-theme="dark"] .inline-switch {
+  border-color: rgba(255, 255, 255, 0.13);
+  background: rgba(31, 29, 33, 0.54);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+body[data-theme="dark"] .toggle {
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.34);
+}
+
+body[data-theme="dark"] .toggle i {
+  background: rgba(255, 255, 255, 0.55);
+}
+
+/* Акцент в тёмной теме светлый, поэтому бегунок на нём тёмный. */
+body[data-theme="dark"] :is(.toggle-row, .inline-switch) input:checked + .toggle i {
+  background: #1c171b;
+}
+
+body[data-theme="dark"] .inline-switch:has(input:checked) {
+  border-color: rgba(var(--accent-rgb), 0.6);
+  background: rgba(var(--accent-rgb), 0.17);
+}
+
 /* Rename dialog in the Explorer. */
 .rename-form {
   display: grid;
@@ -3952,3 +4063,121 @@ body[data-theme="dark"] .apps-panel__tip kbd {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Настоящие значки приложений вместо инициалов и типа файла. */
+.app-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  user-select: none;
+}
+
+.app-row__icon.has-app-icon,
+body[data-theme="dark"] .app-row__icon.has-app-icon,
+.file-card__visual.has-app-icon,
+body[data-theme="dark"] .file-card__visual.has-app-icon,
+.file-grid .file-card__visual.has-app-icon,
+body[data-theme="dark"] .file-grid .file-card__visual.has-app-icon,
+.search-results-list .search-result-row .file-card__visual.has-app-icon,
+body[data-theme="dark"] .search-results-list .search-result-row .file-card__visual.has-app-icon {
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Плитка без обложки: значок приложения над инициалами. */
+.game-card__mark {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.game-card__app-icon {
+  display: block;
+  width: clamp(56px, 4.6vw, 72px);
+  aspect-ratio: 1;
+  filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.22));
+}
+
+/* Пока значка нет, место не занимаем, но элемент остаётся видимым для IntersectionObserver. */
+.game-card__app-icon:not(.has-app-icon):not(.has-default-icon) {
+  position: absolute;
+  width: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.game-card__app-icon.has-app-icon,
+.game-card__app-icon.has-default-icon {
+  animation: app-icon-in 220ms ease both;
+}
+
+/* Правило обложки (.game-card__art img) значка не касается. */
+.game-card__app-icon img.app-icon {
+  position: static;
+  inset: auto;
+  z-index: auto;
+  opacity: 1;
+  transition: none;
+}
+
+.game-card__mark:has(.has-app-icon) .game-card__initials,
+.game-card__mark:has(.has-default-icon) .game-card__initials {
+  font-size: clamp(24px, 2.4vw, 34px);
+  letter-spacing: -0.04em;
+}
+
+@keyframes app-icon-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .game-card__app-icon.has-app-icon,
+  .game-card__app-icon.has-default-icon { animation: none; }
+}
+
+/* Значки по умолчанию: сайт, ссылка, скрипт, программа. */
+.default-app-icon {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 24%;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.95), rgba(244, 236, 241, 0.78));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  color: var(--accent-strong);
+  place-items: center;
+}
+
+.default-app-icon .icon {
+  width: 54%;
+  height: 54%;
+  stroke-width: 1.6;
+}
+
+/* В тёмной теме акцент светлый — на светлой плашке значок затемняем. */
+body[data-theme="dark"] .default-app-icon--app {
+  color: rgba(39, 29, 35, 0.78);
+  color: color-mix(in srgb, var(--accent) 45%, #1c171b);
+}
+
+.default-app-icon--web {
+  background: linear-gradient(160deg, #f1f7ff, #cddff5);
+  color: #3d6593;
+}
+
+.default-app-icon--link {
+  background: linear-gradient(160deg, #f5f2ff, #dbd3f2);
+  color: #5d518f;
+}
+
+.default-app-icon--script {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: linear-gradient(160deg, #3b343d, #1f1b21);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #f2eaf0;
+}
+
