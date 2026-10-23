@@ -4181,3 +4181,285 @@ body[data-theme="dark"] .default-app-icon--app {
   color: #f2eaf0;
 }
 
+
+/* Пути в пояснениях настроек (например, другая копия в автозапуске). */
+.settings-section .inline-notice code {
+  font-family: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+/* Заставка: большие часы поверх фона лаунчера, своего изображения или видео YouTube. */
+.idle-screen {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  overflow: hidden;
+  color: #fff;
+  cursor: none;
+  opacity: 0;
+  transition: opacity 600ms ease;
+}
+
+.idle-screen.is-open {
+  opacity: 1;
+}
+
+/* Пока открыта заставка, интерфейс лаунчера скрыт — под ней виден только фон. */
+body.is-idle #app-shell,
+body.is-idle #system-panel,
+body.is-idle #system-scrim,
+body.is-idle #apps-panel,
+body.is-idle #apps-scrim,
+body.is-idle #modal-layer,
+body.is-idle #toast {
+  visibility: hidden !important;
+}
+
+.idle-screen__media {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+.idle-screen[data-source="image"] .idle-screen__media,
+.idle-screen[data-source="youtube"] .idle-screen__media {
+  background: #000;
+}
+
+.idle-screen__image {
+  position: absolute;
+  inset: -3%;
+  background-position: center;
+  background-size: cover;
+  animation: idle-image-drift 70s ease-in-out infinite alternate;
+}
+
+@keyframes idle-image-drift {
+  from { transform: scale(1.02) translate3d(-1%, -0.6%, 0); }
+  to { transform: scale(1.09) translate3d(1%, 0.6%, 0); }
+}
+
+/* Видео заполняет экран как обложка: лишнее по краям обрезается. */
+.idle-screen__video {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: max(100vw, 177.78vh);
+  height: max(100vh, 56.25vw);
+  border: 0;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: opacity 900ms ease;
+}
+
+.idle-screen__video.is-playing {
+  opacity: 1;
+}
+
+.idle-screen__shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.12) 58%, rgba(0, 0, 0, 0.3));
+}
+
+.idle-screen[data-clock-position="top-left"] .idle-screen__shade { background: linear-gradient(135deg, rgba(0, 0, 0, 0.58), rgba(0, 0, 0, 0.08) 58%); }
+.idle-screen[data-clock-position="top-right"] .idle-screen__shade { background: linear-gradient(225deg, rgba(0, 0, 0, 0.58), rgba(0, 0, 0, 0.08) 58%); }
+.idle-screen[data-clock-position="bottom-left"] .idle-screen__shade { background: linear-gradient(45deg, rgba(0, 0, 0, 0.58), rgba(0, 0, 0, 0.08) 58%); }
+.idle-screen[data-clock-position="bottom-right"] .idle-screen__shade { background: linear-gradient(315deg, rgba(0, 0, 0, 0.58), rgba(0, 0, 0, 0.08) 58%); }
+
+.idle-screen__clock {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  padding: 8vh 6vw;
+  gap: 1.2vh;
+  place-self: center;
+  text-align: center;
+  text-shadow: 0 4px 34px rgba(0, 0, 0, 0.42);
+  transform: translate(var(--idle-shift-x, 0), var(--idle-shift-y, 0));
+  transition: transform 2400ms ease;
+}
+
+.idle-screen[data-clock-position="top-left"] .idle-screen__clock { place-self: start start; text-align: left; }
+.idle-screen[data-clock-position="top-right"] .idle-screen__clock { place-self: start end; text-align: right; }
+.idle-screen[data-clock-position="bottom-left"] .idle-screen__clock { place-self: end start; text-align: left; }
+.idle-screen[data-clock-position="bottom-right"] .idle-screen__clock { place-self: end end; text-align: right; }
+
+.idle-screen__time {
+  font-size: clamp(96px, 16vw, 320px);
+  font-weight: 200;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.05em;
+  line-height: 0.88;
+}
+
+.idle-screen:not([data-clock-position="center"]) .idle-screen__time {
+  font-size: clamp(72px, 9vw, 180px);
+}
+
+.idle-screen__date {
+  font-size: clamp(18px, 1.9vw, 38px);
+  font-weight: 450;
+  opacity: 0.86;
+}
+
+.idle-screen__date::first-letter {
+  text-transform: uppercase;
+}
+
+.idle-screen__note {
+  position: absolute;
+  z-index: 1;
+  right: 4vw;
+  bottom: 3vh;
+  max-width: 46ch;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  opacity: 0.72;
+  text-align: right;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, 0.5);
+}
+
+.idle-screen[data-clock-position="bottom-right"] .idle-screen__note {
+  right: auto;
+  left: 4vw;
+  text-align: left;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .idle-screen__image { animation: none; }
+  .idle-screen__clock { transition: none; }
+}
+
+/* Настройки заставки. */
+.idle-settings {
+  gap: 14px;
+}
+
+.idle-settings [data-idle-panel][hidden],
+.idle-screen[hidden],
+.idle-screen__note[hidden] {
+  display: none;
+}
+
+.idle-settings__group {
+  display: grid;
+  gap: 8px;
+}
+
+.idle-settings__label {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.idle-settings__youtube {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-section .idle-settings__hint {
+  color: var(--text-muted);
+}
+
+.settings-section .idle-settings__hint.is-error {
+  color: #b3473f;
+}
+
+body[data-theme="dark"] .settings-section .idle-settings__hint.is-error {
+  color: #f0907f;
+}
+
+.idle-settings__preview {
+  width: fit-content;
+}
+
+.choice-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.choice-pill {
+  position: relative;
+  display: inline-flex;
+  min-height: 36px;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.26);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  align-items: center;
+  gap: 8px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.settings-section .choice-pill input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+}
+
+.choice-pill:hover,
+.choice-pill:has(input:checked) {
+  border-color: rgba(var(--accent-rgb, 149, 107, 131), 0.45);
+  background: rgba(var(--accent-rgb, 149, 107, 131), 0.12);
+}
+
+.choice-pill:has(input:checked) {
+  color: var(--accent-strong);
+}
+
+.choice-pill:has(input.is-focused),
+.choice-pill:has(input:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+
+body[data-theme="dark"] .choice-pill {
+  border-color: rgba(255, 255, 255, 0.13);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+body[data-theme="dark"] .choice-pill:hover,
+body[data-theme="dark"] .choice-pill:has(input:checked) {
+  border-color: rgba(var(--accent-rgb), 0.5);
+  background: rgba(var(--accent-rgb), 0.16);
+}
+
+/* Мини-схема экрана с точкой там, где будут часы. */
+.clock-spot {
+  position: relative;
+  width: 22px;
+  height: 15px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+  opacity: 0.7;
+}
+
+.clock-spot::after {
+  position: absolute;
+  width: 6px;
+  height: 3px;
+  border-radius: 2px;
+  background: currentColor;
+  content: "";
+}
+
+.clock-spot--center::after { top: 4.5px; left: 6.5px; }
+.clock-spot--top-left::after { top: 2px; left: 2px; }
+.clock-spot--top-right::after { top: 2px; right: 2px; }
+.clock-spot--bottom-left::after { bottom: 2px; left: 2px; }
+.clock-spot--bottom-right::after { right: 2px; bottom: 2px; }

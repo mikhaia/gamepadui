@@ -35,6 +35,16 @@
   // После возврата в лаунчер стик, отклонённый ещё в игре, не должен листать меню, пока его не отпустят.
   let stickLatched = false;
   const BACKGROUND_POLL_MS = 250;
+  // Перехватчик ввода (например, заставка): если вернул true, нажатие поглощено и больше ничего не делает.
+  let inputInterceptor = null;
+
+  function setInputInterceptor(callback) {
+    inputInterceptor = typeof callback === "function" ? callback : null;
+  }
+
+  function interceptInput() {
+    return Boolean(inputInterceptor && inputInterceptor());
+  }
 
   function visibleFocusableElements() {
     const modal = document.getElementById("modal-layer");
@@ -124,8 +134,13 @@
     else dispatch(action);
   }
 
+  // Переключатели и кнопки-инпуты управляются как обычные элементы: стрелки двигают фокус, Enter нажимает
+  // (без этого Enter на флажке отправлял бы всю форму настроек). Текстовые поля и ползунки клавиши получают сами.
+  const NON_TYPING_INPUTS = new Set(["checkbox", "radio", "button", "submit", "reset", "image", "file", "color"]);
+
   function isTypingTarget(target) {
-    return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+    if (target instanceof HTMLInputElement) return !NON_TYPING_INPUTS.has(target.type);
+    return target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
   }
 
   function onKeyDown(event) {
@@ -241,8 +256,15 @@
       if (!inputAllowed()) {
         absorbGamepadState(now, gamepad);
       } else {
+        let swallowed = false;
         gamepad.buttons.forEach((button, index) => {
-          if (button.pressed && !previousButtons[index] && BUTTONS[index]) {
+          if (!button.pressed || previousButtons[index]) return;
+          // Любая кнопка (даже не назначенная) будит заставку и в этом кадре больше ничего не делает.
+          if (swallowed || interceptInput()) {
+            swallowed = true;
+            return;
+          }
+          if (BUTTONS[index]) {
             handleAction(BUTTONS[index]);
             document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "gamepad", id: gamepad.id } }));
           }
@@ -256,7 +278,11 @@
         } else {
           const directionChanged = horizontal !== axisState.horizontal || vertical !== axisState.vertical;
           const repeatReady = now - axisState.changedAt > 230;
-          if ((directionChanged || repeatReady) && (horizontal || vertical)) {
+          if ((directionChanged || repeatReady) && (horizontal || vertical) && (swallowed || interceptInput())) {
+            // Стиком разбудили заставку — дальше он не листает, пока его не отпустят.
+            stickLatched = true;
+            axisState = { horizontal, vertical, changedAt: now };
+          } else if ((directionChanged || repeatReady) && (horizontal || vertical)) {
             const direction = Math.abs(horizontal) >= Math.abs(vertical)
               ? (horizontal > 0 ? "right" : "left")
               : (vertical > 0 ? "down" : "up");
@@ -304,5 +330,5 @@
     document.removeEventListener("click", onPointerClick);
   }
 
-  globalScope.GamePadNavigation = { destroy, ensureFocus, init, isWindowActive: () => windowActive, move, setFocus, setWindowActive };
+  globalScope.GamePadNavigation = { destroy, ensureFocus, init, isWindowActive: () => windowActive, move, setFocus, setInputInterceptor, setWindowActive };
 })(window);

@@ -11,6 +11,8 @@
   const Sound = globalScope.GamePadSound;
   const ImageCache = globalScope.GamePadImageCache;
   const AppIcons = globalScope.GamePadAppIcons;
+  const Autostart = globalScope.GamePadAutostart;
+  const IdleScreen = globalScope.GamePadIdleScreen;
   const STORAGE_KEY = "gamepad-ui-state-v1";
   const DEFAULT_STATE = {
     library: [],
@@ -30,7 +32,14 @@
       // может вызвать запросы доступа к «Документам», «Рабочему столу» и «Загрузкам».
       explorerFolderSizes: false,
       display: null,
-      searchPaths: []
+      searchPaths: [],
+      // Заставка: через сколько минут простоя (0 — никогда), фон, ссылка YouTube, звук и место часов.
+      idleTimeout: 0,
+      idleSource: "launcher",
+      idleImagePath: "",
+      idleYoutubeUrl: "",
+      idleSound: false,
+      idleClockPosition: "center"
     }
   };
   const SECTION_ORDER = ["favorites", "library", "explorer", "search"];
@@ -84,6 +93,13 @@
   // Значки приложений: маленькие, живут до конца сеанса.
   const iconImages = ImageCache.createImageCache(imageCacheOptions);
   let iconLoader = null;
+  // Заставка: таймер простоя и открытый сейчас экран (null — закрыт).
+  let idleTimerId = 0;
+  let idleLastReset = 0;
+  let idleSession = null;
+  let idlePointerOrigin = null;
+  // Состояние автозапуска, прочитанное из системы при открытии настроек.
+  let autostartStatus = null;
   let iconObserver = null;
   const observedIconSlots = new Set();
   // Фоновые процессы (подсчёт размеров папок, извлечение значков) получают события по своему номеру.
@@ -113,7 +129,8 @@
       "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
       "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow", "explorer-sort", "explorer-sort-button",
       "explorer-sort-label", "explorer-sort-menu", "explorer-pins", "explorer-pin-current",
-      "explorer-folder-sizes", "explorer-folder-sizes-switch"
+      "explorer-folder-sizes", "explorer-folder-sizes-switch", "idle-screen", "idle-media", "idle-clock", "idle-time",
+      "idle-date", "idle-note"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
 
@@ -214,7 +231,14 @@
   // Картинки, которые сейчас на экране или вот-вот появятся; остальные выгружаются из кеша.
   function imagePathsInUse() {
     const previews = [...document.querySelectorAll("[data-cover-preview]")].map((preview) => preview.dataset.requestedPath);
-    return [...state.library.map((item) => item.coverPath), state.settings.backgroundPath, shownBackgroundPath, ...previews];
+    return [
+      ...state.library.map((item) => item.coverPath),
+      state.settings.backgroundPath,
+      shownBackgroundPath,
+      state.settings.idleImagePath,
+      idleSession?.config.imagePath,
+      ...previews
+    ];
   }
 
   function coverValueForSource(form, source) {
@@ -966,6 +990,41 @@
         if (cancel) Navigation.setFocus(cancel, { scroll: false });
       }
     });
+  }
+
+  function openRemoveItemConfirm(item) {
+    const notice = Model.isWebUrl(item.path)
+      ? "Убирается только карточка со ссылкой."
+      : "Убирается только карточка — сам файл на диске останется.";
+    openConfirm({
+      title: `Удалить «${item.name}» из библиотеки?`,
+      eyebrow: "УДАЛЕНИЕ",
+      notice: item.favorite ? `${notice} Из «Избранного» она тоже пропадёт.` : notice,
+      confirmLabel: "Удалить из библиотеки",
+      confirmIcon: "trash",
+      confirmAttributes: `data-action="confirm-remove-item" data-remove-item-id="${escapeHtml(item.id)}"`
+    });
+  }
+
+  async function removeLibraryItem(id) {
+    if (!state.library.some((item) => item.id === id)) {
+      closeModal();
+      return;
+    }
+    // После удаления фокус переходит на соседнюю карточку той же сетки, а не на вкладку.
+    const card = returnFocusTarget?.isConnected ? returnFocusTarget.closest("[data-item-id]") : null;
+    const grid = card?.parentElement || null;
+    const index = grid ? [...grid.querySelectorAll(":scope > [data-item-id]")].indexOf(card) : -1;
+    state.library = state.library.filter((item) => item.id !== id);
+    state.favoriteOrder = state.favoriteOrder.filter((itemId) => itemId !== id);
+    await saveState();
+    renderLibrary();
+    if (grid?.id && elements[grid.id]) {
+      const cards = [...elements[grid.id].querySelectorAll(":scope > [data-item-id]")];
+      returnFocusTarget = cards[Math.min(Math.max(index, 0), cards.length - 1)] || elements[grid.id].querySelector("[data-focusable]") || null;
+    }
+    closeModal();
+    showToast("Удалено из библиотеки");
   }
 
   function explorerCard(entryName) {
@@ -2233,6 +2292,14 @@
             <div class="settings-section__controls" id="display-options"><p class="muted-copy">Определяю мониторы…</p></div>
           </section>
           <section class="settings-section">
+            <div><h3>Заставка</h3><p>Большие часы на весь экран, когда лаунчером долго не пользуются. Любая кнопка, клавиша или движение мыши закрывают её и больше ничего не делают.</p></div>
+            ${idleSettingsMarkup()}
+          </section>
+          <section class="settings-section">
+            <div><h3>Автозапуск</h3><p>Открывать GamePad UI сразу после входа в систему.</p></div>
+            <div class="settings-section__controls" id="autostart-options"><p class="muted-copy">Проверяю автозапуск…</p></div>
+          </section>
+          <section class="settings-section">
             <div><h3>Звуки интерфейса</h3><p>Короткие сигналы при перемещении по интерфейсу и нажатии на элементы.</p></div>
             <div class="settings-section__controls">
               <label class="toggle-row">
@@ -2264,6 +2331,13 @@
           const container = form.isConnected ? form.querySelector("#display-options") : null;
           if (container) container.innerHTML = displayOptionsMarkup(outcome);
         });
+        bindIdleSettings(form);
+        autostartStatus = null;
+        readAutostartStatus().then((status) => {
+          autostartStatus = status;
+          const container = form.isConnected ? form.querySelector("#autostart-options") : null;
+          if (container) container.innerHTML = autostartOptionsMarkup(status);
+        });
         form.addEventListener("submit", async (event) => {
           event.preventDefault();
           const formData = new FormData(form);
@@ -2281,12 +2355,19 @@
           state.settings.backgroundDim = Number(formData.get("backgroundDim"));
           state.settings.backgroundBlur = Number(formData.get("backgroundBlur"));
           state.settings.soundEnabled = formData.get("soundEnabled") === "on";
+          Object.assign(state.settings, idleSettingsFromForm(form));
+          // Автозапуск хранится в системе, а не в настройках лаунчера.
+          const autostartInput = form.elements.autostart;
+          const autostartWanted = autostartInput && !autostartInput.disabled ? autostartInput.checked : null;
           await saveState();
           await applySettings({ refreshBackground: form.dataset.backgroundPicked === "true" });
           queueDirectorySearch();
           closeModal();
           showToast("Настройки сохранены");
           if (targetDisplay) moveWindowToDisplay(targetDisplay, { announce: true });
+          if (autostartWanted !== null) applyAutostart(autostartWanted);
+          idleLastReset = 0;
+          scheduleIdleScreen();
         });
         if (options.revealSearchPaths) {
           requestAnimationFrame(() => {
@@ -2298,16 +2379,205 @@
     });
   }
 
-  async function requestSystemAction(action) {
-    const labels = { sleep: "Перевести компьютер в спящий режим?", restart: "Перезагрузить компьютер?", shutdown: "Выключить компьютер?" };
-    let confirmed = false;
-    if (hasNativeApi()) {
-      const answer = await globalScope.Neutralino.os.showMessageBox("Подтверждение", labels[action], "YES_NO", "QUESTION");
-      confirmed = answer === "YES";
-    } else {
-      confirmed = globalScope.confirm(labels[action]);
+  const IDLE_SOURCE_LABELS = { launcher: "Фон лаунчера", image: "Своё изображение", youtube: "Видео YouTube" };
+  const CLOCK_POSITION_LABELS = {
+    center: "По центру",
+    "top-left": "Слева вверху",
+    "top-right": "Справа вверху",
+    "bottom-left": "Слева внизу",
+    "bottom-right": "Справа внизу"
+  };
+
+  function choicePill(name, value, label, checked, decoration = "") {
+    return `
+      <label class="choice-pill">
+        <input type="radio" name="${name}" value="${escapeHtml(String(value))}" ${checked ? "checked" : ""} data-focusable>
+        ${decoration}<span>${escapeHtml(label)}</span>
+      </label>`;
+  }
+
+  function idleSettingsMarkup() {
+    const config = idleConfig();
+    return `
+      <div class="settings-section__controls idle-settings">
+        <div class="idle-settings__group">
+          <span class="idle-settings__label">Включать через</span>
+          <div class="choice-pills" role="radiogroup" aria-label="Включать заставку через">
+            ${IdleScreen.IDLE_TIMEOUTS.map((minutes) => choicePill("idleTimeout", minutes, minutes ? `${minutes} мин` : "Никогда", config.timeout === minutes)).join("")}
+          </div>
+        </div>
+        <div class="idle-settings__group">
+          <span class="idle-settings__label">Фон</span>
+          <div class="choice-pills" role="radiogroup" aria-label="Фон заставки">
+            ${IdleScreen.IDLE_SOURCES.map((source) => choicePill("idleSource", source, IDLE_SOURCE_LABELS[source], config.source === source)).join("")}
+          </div>
+          <div class="field__picker" data-idle-panel="image" ${config.source === "image" ? "" : "hidden"}>
+            <input name="idleImagePath" value="${escapeHtml(config.imagePath)}" placeholder="Изображение JPG, PNG или WebP" data-focusable>
+            <button type="button" class="action-button" data-action="pick-idle-image" data-focusable>Выбрать</button>
+          </div>
+          <div class="idle-settings__youtube" data-idle-panel="youtube" ${config.source === "youtube" ? "" : "hidden"}>
+            <input name="idleYoutubeUrl" type="url" value="${escapeHtml(config.youtubeUrl)}" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false" data-focusable>
+            <p class="idle-settings__hint" data-idle-youtube-hint></p>
+            <label class="toggle-row">
+              <input type="checkbox" name="idleSound" ${config.sound ? "checked" : ""} data-focusable>
+              <span class="toggle"><i></i></span>
+              <span><b>Звук видео</b><small>Если система не разрешит звук без нажатия, видео пойдёт без звука</small></span>
+            </label>
+          </div>
+        </div>
+        <div class="idle-settings__group">
+          <span class="idle-settings__label">Часы</span>
+          <div class="choice-pills" role="radiogroup" aria-label="Положение часов">
+            ${IdleScreen.CLOCK_POSITIONS.map((position) => choicePill("idleClockPosition", position, CLOCK_POSITION_LABELS[position], config.clockPosition === position, `<i class="clock-spot clock-spot--${position}" aria-hidden="true"></i>`)).join("")}
+          </div>
+        </div>
+        <button type="button" class="action-button idle-settings__preview" data-action="preview-idle" data-focusable>${icon("clock")} Посмотреть заставку</button>
+      </div>`;
+  }
+
+  // Значения заставки из формы настроек (в том же виде, что в state.settings).
+  function idleSettingsFromForm(form) {
+    const data = new FormData(form);
+    return {
+      idleTimeout: Number(data.get("idleTimeout") || 0),
+      idleSource: String(data.get("idleSource") || "launcher"),
+      idleImagePath: String(data.get("idleImagePath") || "").trim(),
+      idleYoutubeUrl: String(data.get("idleYoutubeUrl") || "").trim(),
+      idleSound: data.get("idleSound") === "on",
+      idleClockPosition: String(data.get("idleClockPosition") || "center")
+    };
+  }
+
+  function bindIdleSettings(form) {
+    const sync = () => {
+      const source = form.querySelector('input[name="idleSource"]:checked')?.value || "launcher";
+      form.querySelectorAll("[data-idle-panel]").forEach((panel) => { panel.hidden = panel.dataset.idlePanel !== source; });
+    };
+    const hint = form.querySelector("[data-idle-youtube-hint]");
+    const checkLink = () => {
+      const value = form.elements.idleYoutubeUrl.value.trim();
+      const valid = !value || IdleScreen.parseYouTubeUrl(value);
+      hint.textContent = valid ? "Видео или плейлист, повторяется по кругу. Нужен интернет." : "Не похоже на ссылку на видео или плейлист YouTube.";
+      hint.classList.toggle("is-error", !valid);
+    };
+    form.querySelectorAll('input[name="idleSource"]').forEach((input) => input.addEventListener("change", sync));
+    form.elements.idleYoutubeUrl.addEventListener("input", checkLink);
+    sync();
+    checkLink();
+  }
+
+  function autostartLaunchSpec() {
+    return Autostart.launchSpec({ osName: getOsName(), args: globalScope.NL_ARGS, cwd: globalScope.NL_CWD, appPath: globalScope.NL_PATH });
+  }
+
+  // null — автозапуск здесь недоступен; { error: true } — прочитать состояние не удалось.
+  async function readAutostartStatus() {
+    const osName = getOsName();
+    if (!hasNativeApi() || !Autostart.supportsAutostart(osName) || !autostartLaunchSpec()) return null;
+    try {
+      const result = await globalScope.Neutralino.os.execCommand(Autostart.buildStatusCommand(osName, globalScope.NL_APPID));
+      return Autostart.parseStatus(osName, result.stdOut);
+    } catch (error) {
+      console.warn("Unable to read the autostart state", error);
+      return { error: true };
     }
-    if (!confirmed) return;
+  }
+
+  function autostartOptionsMarkup(status) {
+    if (!hasNativeApi()) return '<p class="muted-copy">Автозапуск настраивается в приложении Neutralino.</p>';
+    if (!status) return '<p class="muted-copy">На этой системе автозапуск пока не поддерживается.</p>';
+    if (status.error) return '<p class="muted-copy">Не удалось проверить автозапуск. Откройте настройки ещё раз.</p>';
+    const osName = getOsName();
+    const spec = autostartLaunchSpec();
+    const checked = status.enabled && !status.disabled;
+    const when = osName === "Windows" ? "При входе в Windows" : osName === "Darwin" ? "При входе в macOS" : "При входе в систему";
+    const notes = [];
+    if (status.enabled && !Autostart.matchesSpec(status, spec, osName)) {
+      notes.push(`Сейчас при входе запускается другая копия: <code>${escapeHtml(status.executable)}</code>. Сохраните с включённым переключателем, чтобы запускать эту.`);
+    }
+    if (status.enabled && status.disabled) {
+      notes.push(`Автозапуск выключен ${osName === "Windows" ? "в «Диспетчере задач»" : "в настройках системы"}. Включите переключатель и сохраните, чтобы вернуть его.`);
+    }
+    if (spec.devMode) notes.push("Лаунчер запущен в режиме разработки (neu run) — автозапуск откроет его из папки проекта.");
+    return `
+      <label class="toggle-row">
+        <input type="checkbox" name="autostart" ${checked ? "checked" : ""} data-focusable>
+        <span class="toggle"><i></i></span>
+        <span><b>Запускать вместе с системой</b><small>${when}</small></span>
+      </label>
+      ${notes.map((note) => `<p class="inline-notice">${note}</p>`).join("")}`;
+  }
+
+  async function applyAutostart(wanted) {
+    const osName = getOsName();
+    const spec = autostartLaunchSpec();
+    const status = autostartStatus;
+    if (!spec || !status || status.error) return;
+    const current = status.enabled && !status.disabled && Autostart.matchesSpec(status, spec, osName);
+    let command = "";
+    if (wanted && !current) command = Autostart.buildEnableCommand(osName, spec, globalScope.NL_APPID);
+    else if (!wanted && status.enabled) command = Autostart.buildDisableCommand(osName, globalScope.NL_APPID);
+    if (!command) return;
+    try {
+      const result = await globalScope.Neutralino.os.execCommand(command);
+      if (result?.exitCode) throw new Error(result.stdErr || `exit code ${result.exitCode}`);
+      // Проверяем, что система действительно запомнила изменение.
+      const after = await readAutostartStatus();
+      const applied = wanted
+        ? Boolean(after && !after.error && !after.disabled && Autostart.matchesSpec(after, spec, osName))
+        : Boolean(after && !after.error && !after.enabled);
+      if (!applied) throw new Error("Autostart state did not change");
+      autostartStatus = after;
+      showToast(wanted ? "Автозапуск включён: GamePad UI откроется при входе в систему" : "Автозапуск выключен");
+    } catch (error) {
+      console.error(error);
+      showToast(wanted ? "Не удалось включить автозапуск" : "Не удалось выключить автозапуск", "error");
+    }
+  }
+
+  // Подтверждение внутри приложения: системным окном (os.showMessageBox) геймпадом не управлять.
+  // Фокус сразу на «Отмена», чтобы случайное нажатие A ничего не сделало.
+  function openConfirm({ title, eyebrow, notice, confirmLabel, confirmIcon, danger = true, confirmAttributes }) {
+    openModal({
+      title,
+      eyebrow,
+      body: `
+        <div class="action-list">
+          ${notice ? `<p class="inline-notice">${escapeHtml(notice)}</p>` : ""}
+          <button class="action-list__item" data-action="close-modal" data-focusable><span>${icon("close")}</span><b>Отмена</b><i>Esc</i></button>
+          <button class="action-list__item${danger ? " action-list__item--danger" : ""}" ${confirmAttributes} data-focusable><span>${icon(confirmIcon)}</span><b>${escapeHtml(confirmLabel)}</b><i>${icon("chevron")}</i></button>
+        </div>`,
+      onReady: () => {
+        const cancel = elements["modal-body"].querySelector('[data-action="close-modal"]');
+        if (cancel) Navigation.setFocus(cancel, { scroll: false });
+      }
+    });
+  }
+
+  const SYSTEM_ACTIONS = {
+    sleep: { title: "Перевести компьютер в сон?", notice: "Открытые программы продолжат работу после пробуждения.", label: "Перевести в сон", icon: "moon", danger: false },
+    restart: { title: "Перезагрузить компьютер?", notice: "Несохранённые данные в открытых программах могут пропасть.", label: "Перезагрузить", icon: "restart", danger: true },
+    shutdown: { title: "Выключить компьютер?", notice: "Несохранённые данные в открытых программах могут пропасть.", label: "Выключить", icon: "power", danger: true }
+  };
+
+  function requestSystemAction(action) {
+    const details = SYSTEM_ACTIONS[action];
+    if (!details) return;
+    closeSystemMenu();
+    openConfirm({
+      title: details.title,
+      eyebrow: "СИСТЕМА",
+      notice: details.notice,
+      confirmLabel: details.label,
+      confirmIcon: details.icon,
+      danger: details.danger,
+      confirmAttributes: `data-action="confirm-system-command" data-confirm-system="${action}"`
+    });
+  }
+
+  async function runSystemAction(action) {
+    closeModal();
+    if (!SYSTEM_ACTIONS[action]) return;
     const command = Platform.buildSystemCommand(action, getOsName());
     if (!command || !hasNativeApi()) {
       showToast("Системная команда недоступна в режиме предпросмотра", "info");
@@ -2385,6 +2655,21 @@
       case "close-modal": closeModal(); break;
       case "close-system-menu": closeSystemMenu(); break;
       case "open-settings": openSettings(); break;
+      case "show-idle-screen":
+        closeSystemMenu();
+        showIdleScreen();
+        break;
+      case "preview-idle": {
+        const form = target.closest("form");
+        if (form) showIdleScreen(IdleScreen.normalizeIdleSettings(idleSettingsFromForm(form)));
+        break;
+      }
+      case "pick-idle-image": {
+        const form = target.closest("form");
+        const path = await chooseFile([{ name: "Изображения", extensions: ["jpg", "jpeg", "png", "webp"] }], form.elements.idleImagePath.value);
+        if (path) form.elements.idleImagePath.value = path;
+        break;
+      }
       case "open-search-settings": openSettings({ revealSearchPaths: true }); break;
       case "choose-folder": {
         if (!hasNativeApi()) {
@@ -2499,18 +2784,11 @@
       case "remove-current-item": {
         const id = target.closest("[data-action-item-id]").dataset.actionItemId;
         const item = state.library.find((libraryItem) => libraryItem.id === id);
-        const confirmed = hasNativeApi()
-          ? await globalScope.Neutralino.os.showMessageBox("Удаление", `Удалить «${item.name}» из библиотеки?`, "YES_NO", "QUESTION") === "YES"
-          : globalScope.confirm(`Удалить «${item.name}» из библиотеки?`);
-        if (confirmed) {
-          state.library = state.library.filter((libraryItem) => libraryItem.id !== id);
-          await saveState();
-          renderLibrary();
-          closeModal();
-          showToast("Удалено из библиотеки");
-        }
+        if (item) openRemoveItemConfirm(item);
         break;
       }
+      case "confirm-remove-item": await removeLibraryItem(target.dataset.removeItemId); break;
+      case "confirm-system-command": await runSystemAction(target.dataset.confirmSystem); break;
       case "add-explorer-library":
       case "add-explorer-favorites": {
         const actionList = target.closest("[data-explorer-action-path]");
@@ -2697,10 +2975,282 @@
     }
   }
 
+  const clockTimeFormat = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" });
+  const clockDateFormat = new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" });
+
   function updateClock() {
     const now = new Date();
-    elements["clock-time"].textContent = new Intl.DateTimeFormat("ru-RU", { hour: "2-digit", minute: "2-digit" }).format(now);
-    elements["clock-date"].textContent = new Intl.DateTimeFormat("ru-RU", { weekday: "long", day: "numeric", month: "long" }).format(now);
+    elements["clock-time"].textContent = clockTimeFormat.format(now);
+    elements["clock-date"].textContent = clockDateFormat.format(now);
+  }
+
+  // ——— Заставка (экран простоя с большими часами) ———
+
+  // Первые мгновения после открытия нажатия не закрывают заставку: так её не сбросит то же
+  // нажатие, которым её открыли (пункт меню, «Посмотреть»), или автоповтор клавиши.
+  const IDLE_WAKE_GRACE_MS = 700;
+  const IDLE_VIDEO_TIMEOUT_MS = 15_000;
+
+  function idleConfig() {
+    return IdleScreen.normalizeIdleSettings(state.settings);
+  }
+
+  function scheduleIdleScreen() {
+    clearTimeout(idleTimerId);
+    idleTimerId = 0;
+    const { timeout } = idleConfig();
+    if (!timeout || idleSession || !Navigation.isWindowActive() || document.visibilityState === "hidden") return;
+    idleTimerId = setTimeout(() => {
+      idleTimerId = 0;
+      if (Navigation.isWindowActive() && document.visibilityState !== "hidden") showIdleScreen();
+    }, timeout * 60_000);
+  }
+
+  // Любой ввод откладывает заставку (не чаще раза в секунду, чтобы движение мыши не дёргало таймер).
+  function noteActivity() {
+    if (idleSession) return;
+    const now = Date.now();
+    if (now - idleLastReset < 1000 && idleTimerId) return;
+    idleLastReset = now;
+    scheduleIdleScreen();
+  }
+
+  // Нажатие, которым будят заставку, больше ничего не делает.
+  function interceptIdleInput() {
+    if (!idleSession) return false;
+    if (globalScope.performance.now() - idleSession.openedAt > IDLE_WAKE_GRACE_MS) closeIdleScreen();
+    return true;
+  }
+
+  function setIdleNote(text) {
+    elements["idle-note"].textContent = text || "";
+    elements["idle-note"].hidden = !text;
+  }
+
+  function updateIdleClock() {
+    const now = new Date();
+    elements["idle-time"].textContent = clockTimeFormat.format(now);
+    elements["idle-date"].textContent = clockDateFormat.format(now);
+  }
+
+  // Раз в минуту часы чуть смещаются, чтобы неподвижные цифры не выжигались на OLED-экранах и плазме.
+  function shiftIdleClock(reset = false) {
+    const offset = () => (reset ? 0 : (Math.random() * 2 - 1) * 1.4).toFixed(2);
+    elements["idle-clock"].style.setProperty("--idle-shift-x", `${offset()}vw`);
+    elements["idle-clock"].style.setProperty("--idle-shift-y", `${offset()}vh`);
+  }
+
+  async function showIdleScreen(config = idleConfig()) {
+    if (idleSession) return;
+    clearTimeout(idleTimerId);
+    idleTimerId = 0;
+    closeExplorerSortMenu({ focusButton: false });
+    const screen = elements["idle-screen"];
+    const session = { config, openedAt: globalScope.performance.now(), clockTimer: 0, shiftTimer: 0, video: null };
+    idleSession = session;
+    idlePointerOrigin = null;
+    screen.dataset.clockPosition = config.clockPosition;
+    screen.dataset.source = "launcher";
+    elements["idle-media"].replaceChildren();
+    setIdleNote("");
+    updateIdleClock();
+    shiftIdleClock(true);
+    session.clockTimer = setInterval(updateIdleClock, 1000);
+    session.shiftTimer = setInterval(() => shiftIdleClock(), 60_000);
+    document.body.classList.add("is-idle");
+    screen.hidden = false;
+    requestAnimationFrame(() => {
+      if (idleSession === session) screen.classList.add("is-open");
+    });
+    if (config.source === "image") await showIdleImage(session);
+    else if (config.source === "youtube") startIdleVideo(session);
+  }
+
+  function closeIdleScreen() {
+    const session = idleSession;
+    if (!session) return false;
+    idleSession = null;
+    clearInterval(session.clockTimer);
+    clearInterval(session.shiftTimer);
+    stopIdleVideo(session);
+    const screen = elements["idle-screen"];
+    screen.classList.remove("is-open");
+    document.body.classList.remove("is-idle");
+    setTimeout(() => {
+      if (idleSession) return;
+      screen.hidden = true;
+      elements["idle-media"].replaceChildren();
+      setIdleNote("");
+    }, 320);
+    idleLastReset = 0;
+    scheduleIdleScreen();
+    return true;
+  }
+
+  async function showIdleImage(session) {
+    const { imagePath } = session.config;
+    if (!imagePath) {
+      setIdleNote("Изображение для заставки не выбрано — показан фон лаунчера");
+      return;
+    }
+    const url = await localImageUrl(imagePath);
+    if (idleSession !== session) return;
+    if (!url) {
+      setIdleNote("Не удалось открыть изображение заставки — показан фон лаунчера");
+      return;
+    }
+    await decodeImage(url);
+    if (idleSession !== session) return;
+    const layer = document.createElement("div");
+    layer.className = "idle-screen__image";
+    layer.style.backgroundImage = `url("${url}")`;
+    elements["idle-media"].replaceChildren(layer);
+    elements["idle-screen"].dataset.source = "image";
+  }
+
+  // Видео YouTube: встроенный плеер без звука (так автозапуск разрешён всегда), управление — через postMessage.
+  function startIdleVideo(session) {
+    const video = IdleScreen.parseYouTubeUrl(session.config.youtubeUrl);
+    if (!video) {
+      setIdleNote(session.config.youtubeUrl ? "Не удалось распознать ссылку на YouTube" : "Ссылка на видео YouTube не указана");
+      return;
+    }
+    const iframe = document.createElement("iframe");
+    iframe.className = "idle-screen__video";
+    iframe.src = IdleScreen.youtubeEmbedUrl(video, { origin: globalScope.location.origin });
+    iframe.allow = "autoplay; encrypted-media; picture-in-picture";
+    // Без Referer YouTube отказывается показывать встроенные видео (ошибка 153).
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    iframe.title = "Видео заставки";
+    iframe.tabIndex = -1;
+    iframe.setAttribute("aria-hidden", "true");
+    const player = { iframe, ready: false, playing: false, unmutedAt: 0, mutedFallback: false, listenTimer: 0, failTimer: 0 };
+    session.video = player;
+    const listen = () => postToIdlePlayer(player, JSON.stringify({ event: "listening", id: 1, channel: "widget" }));
+    iframe.addEventListener("load", listen);
+    player.listenTimer = setInterval(() => {
+      if (!player.ready) listen();
+    }, 500);
+    player.failTimer = setTimeout(() => {
+      if (idleSession === session && !player.playing) failIdleVideo(session, "Видео YouTube не запустилось — проверьте интернет и ссылку");
+    }, IDLE_VIDEO_TIMEOUT_MS);
+    elements["idle-media"].replaceChildren(iframe);
+  }
+
+  function postToIdlePlayer(player, message) {
+    try {
+      player.iframe.contentWindow?.postMessage(message, IdleScreen.YOUTUBE_EMBED_ORIGIN);
+    } catch (error) {
+      // Плеер ещё не загрузился или уже закрыт.
+    }
+  }
+
+  function stopIdleVideo(session) {
+    const player = session.video;
+    if (!player) return;
+    session.video = null;
+    clearInterval(player.listenTimer);
+    clearTimeout(player.failTimer);
+    player.iframe.remove();
+  }
+
+  function failIdleVideo(session, text) {
+    stopIdleVideo(session);
+    elements["idle-screen"].dataset.source = "launcher";
+    setIdleNote(`${text}. Показан фон лаунчера.`);
+  }
+
+  function handleIdlePlayerMessage(event) {
+    const session = idleSession;
+    const player = session?.video;
+    if (!player || event.source !== player.iframe.contentWindow) return;
+    const message = IdleScreen.readPlayerMessage(event.data);
+    if (!message) return;
+    if (message.ready && !player.ready) {
+      player.ready = true;
+      clearInterval(player.listenTimer);
+      postToIdlePlayer(player, IdleScreen.playerCommand("playVideo"));
+    }
+    if (message.error !== null) {
+      failIdleVideo(session, IdleScreen.youtubeErrorText(message.error));
+      return;
+    }
+    if (message.autoplayBlocked) {
+      postToIdlePlayer(player, IdleScreen.playerCommand("mute"));
+      postToIdlePlayer(player, IdleScreen.playerCommand("playVideo"));
+    }
+    if (message.state === 1) {
+      if (!player.playing) {
+        player.playing = true;
+        clearTimeout(player.failTimer);
+        player.iframe.classList.add("is-playing");
+        elements["idle-screen"].dataset.source = "youtube";
+      }
+      if (session.config.sound && !player.unmutedAt) {
+        player.unmutedAt = globalScope.performance.now();
+        postToIdlePlayer(player, IdleScreen.playerCommand("unMute"));
+        postToIdlePlayer(player, IdleScreen.playerCommand("setVolume", [100]));
+      }
+    }
+    // Плеер встал на паузу сразу после включения звука — система не разрешила звук без нажатия: играем без звука.
+    if (message.state === 2 && player.unmutedAt && !player.mutedFallback && globalScope.performance.now() - player.unmutedAt < 5000) {
+      player.mutedFallback = true;
+      postToIdlePlayer(player, IdleScreen.playerCommand("mute"));
+      postToIdlePlayer(player, IdleScreen.playerCommand("playVideo"));
+      setIdleNote("Звук не включился: система не разрешила видео со звуком без нажатия");
+    }
+  }
+
+  function bindIdleScreen() {
+    Navigation.setInputInterceptor(interceptIdleInput);
+    // Клавиатура и мышь перехватываются до всех остальных обработчиков.
+    globalScope.addEventListener("keydown", (event) => {
+      if (!idleSession) {
+        noteActivity();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      interceptIdleInput();
+    }, true);
+    globalScope.addEventListener("pointerdown", (event) => {
+      if (!idleSession) {
+        noteActivity();
+        return;
+      }
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      interceptIdleInput();
+    }, true);
+    globalScope.addEventListener("pointermove", (event) => {
+      if (!idleSession) {
+        noteActivity();
+        return;
+      }
+      // Небольшое дрожание мыши заставку не закрывает.
+      if (!idlePointerOrigin) {
+        idlePointerOrigin = { x: event.clientX, y: event.clientY };
+        return;
+      }
+      if (Math.hypot(event.clientX - idlePointerOrigin.x, event.clientY - idlePointerOrigin.y) > 24) interceptIdleInput();
+    }, true);
+    globalScope.addEventListener("wheel", () => {
+      if (idleSession) interceptIdleInput();
+      else noteActivity();
+    }, { capture: true, passive: true });
+    globalScope.addEventListener("contextmenu", (event) => {
+      if (!idleSession) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+    }, true);
+    // Геймпад: о нажатиях сообщает Navigation.
+    document.addEventListener("input-mode", noteActivity);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") closeIdleScreen();
+      scheduleIdleScreen();
+    });
+    globalScope.addEventListener("message", handleIdlePlayerMessage);
+    scheduleIdleScreen();
   }
 
   function updateInputStatus(type, id) {
@@ -2749,16 +3299,14 @@
     Navigation.setWindowActive(active);
     // Вернулись в лаунчер — значит, запущенная игра уже открылась или закрылась: повторный запуск снова разрешён.
     if (active) recentLaunches.clear();
+    // Пока лаунчер в фоне (идёт игра), заставка не нужна; отсчёт простоя начинается заново после возврата.
+    if (!active) closeIdleScreen();
+    idleLastReset = 0;
+    scheduleIdleScreen();
   }
 
   function bindEvents() {
     elements["explorer-folder-sizes"].addEventListener("change", (event) => setExplorerFolderSizes(event.currentTarget.checked));
-    // Enter переключает так же, как пробел и кнопка A на геймпаде.
-    elements["explorer-folder-sizes"].addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
-      event.preventDefault();
-      event.currentTarget.click();
-    });
     if (hasNativeApi()) {
       globalScope.Neutralino.events.on("windowBlur", () => setWindowActive(false));
       globalScope.Neutralino.events.on("windowFocus", () => setWindowActive(true));
@@ -2849,6 +3397,7 @@
     setInterval(updateClock, 15_000);
     bindEvents();
     Navigation.init();
+    bindIdleScreen();
     switchSection("favorites", { focus: false });
     applySavedDisplay();
   }
