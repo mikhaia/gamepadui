@@ -23,6 +23,7 @@
       searchAllFiles: false,
       explorerSort: "name",
       explorerView: "tiles",
+      explorerPins: null,
       display: null,
       searchPaths: []
     }
@@ -70,6 +71,11 @@
   let appsRequestId = 0;
   let returnFocusTarget = null;
   let detectedDisplays = [];
+  let homeFolderPath = "";
+  // Защита от двойного запуска: пока игра грузится, повторное нажатие A не должно запускать её ещё раз.
+  const LAUNCH_REPEAT_GUARD_MS = 5000;
+  const recentLaunches = new Map();
+  const systemFolderLabels = new Map();
 
   const elements = {};
 
@@ -81,7 +87,7 @@
       "library-search-results", "section-tabs", "system-panel", "system-scrim", "modal-layer", "modal",
       "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
       "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow", "explorer-sort", "explorer-sort-button",
-      "explorer-sort-label", "explorer-sort-menu"
+      "explorer-sort-label", "explorer-sort-menu", "explorer-pins", "explorer-pin-current"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
 
@@ -644,11 +650,363 @@
     return forms[2];
   }
 
-  async function readExplorerDirectory(path) {
+  function folderKey(path) {
+    const normalized = Model.normalizeFolderPath(path, getOsName());
+    return getOsName() === "Windows" ? normalized.toLocaleLowerCase() : normalized;
+  }
+
+  function pinnedFolders() {
+    return Array.isArray(state.settings.explorerPins) ? state.settings.explorerPins : [];
+  }
+
+  function isPinnedFolder(path) {
+    return pinnedFolders().some((pin) => Model.sameFolder(pin, path, getOsName()));
+  }
+
+  function pinLabel(path) {
+    return systemFolderLabels.get(folderKey(path)) || Model.folderDisplayName(path, getOsName());
+  }
+
+  // Домашняя папка, «Рабочий стол», «Документы» и «Загрузки» — подписи по-русски и стартовый набор закреплённых.
+  async function resolveSystemFolders() {
+    const folders = [];
+    if (!hasNativeApi()) {
+      homeFolderPath = "/Users/Player";
+      systemFolderLabels.set(folderKey(homeFolderPath), "Домашняя папка");
+      return [homeFolderPath];
+    }
+    const names = [["home", "Домашняя папка"], ["desktop", "Рабочий стол"], ["documents", "Документы"], ["downloads", "Загрузки"]];
+    for (const [name, label] of names) {
+      try {
+        const path = Model.normalizeFolderPath(await globalScope.Neutralino.os.getPath(name), getOsName());
+        if (!path) continue;
+        if (name === "home") homeFolderPath = path;
+        systemFolderLabels.set(folderKey(path), label);
+        folders.push(path);
+      } catch (error) {
+        console.warn(`Unable to resolve the ${name} folder`, error);
+      }
+    }
+    return folders;
+  }
+
+  function pinRowMarkup(path, index, total) {
+    const active = Model.sameFolder(path, explorerPath, getOsName());
+    const parent = Model.parentPath(path, getOsName());
+    const subtitle = parent && !Model.sameFolder(parent, path, getOsName()) ? parent : "";
+    const label = pinLabel(path);
+    const attrs = `data-pin-path="${escapeHtml(path)}"`;
+    return `
+      <div class="pin-row${active ? " is-active" : ""}">
+        <button type="button" class="pin-row__main" data-action="open-pinned-folder" data-pin-role="open" ${attrs} data-focusable title="${escapeHtml(path)}" ${active ? 'aria-current="true"' : ""}>
+          <span class="pin-row__icon" aria-hidden="true">${icon("folder")}</span>
+          <span class="pin-row__text"><b>${escapeHtml(label)}</b>${subtitle ? `<small>${escapeHtml(subtitle)}</small>` : ""}</span>
+        </button>
+        ${active ? `
+        <div class="pin-row__actions" role="group" aria-label="Управление закреплённой папкой">
+          <button type="button" class="pin-row__action" data-action="move-pinned-folder" data-direction="up" data-pin-role="up" ${attrs} data-focusable aria-label="Поднять выше" title="Поднять выше" ${index === 0 ? "disabled" : ""}>${icon("chevron-up")}</button>
+          <button type="button" class="pin-row__action" data-action="move-pinned-folder" data-direction="down" data-pin-role="down" ${attrs} data-focusable aria-label="Опустить ниже" title="Опустить ниже" ${index === total - 1 ? "disabled" : ""}>${icon("chevron-down")}</button>
+          <button type="button" class="pin-row__action pin-row__action--danger pin-row__action--wide" data-action="unpin-folder" data-pin-role="unpin" ${attrs} data-focusable title="Открепить">${icon("close")}<span>Открепить</span></button>
+        </div>` : ""}
+      </div>`;
+  }
+
+  function pinElement(path, role) {
+    return [...elements["explorer-pins"].querySelectorAll("[data-pin-path]")]
+      .find((element) => element.dataset.pinRole === role && Model.sameFolder(element.dataset.pinPath, path, getOsName())) || null;
+  }
+
+  // focusTarget: { path, role } — куда поставить фокус после перерисовки (иначе сохраняем текущий).
+  function renderExplorerPins(focusTarget = null) {
+    const pins = pinnedFolders();
+    const focused = document.querySelector(".is-focused");
+    const keep = focusTarget || (focused && elements["explorer-pins"].contains(focused)
+      ? { path: focused.dataset.pinPath, role: focused.dataset.pinRole }
+      : null);
+    elements["explorer-pins"].innerHTML = pins.length
+      ? pins.map((pin, index) => pinRowMarkup(pin, index, pins.length)).join("")
+      : '<p class="explorer-pins__empty">Здесь будут закреплённые папки. Нажмите «+», чтобы закрепить текущую, или X на папке.</p>';
+    const currentPinned = isPinnedFolder(explorerPath);
+    elements["explorer-pin-current"].disabled = !explorerPath || currentPinned;
+    elements["explorer-pin-current"].title = currentPinned ? "Текущая папка уже закреплена" : "Закрепить текущую папку";
+    if (!keep) return;
+    const target = (keep.path && (pinElement(keep.path, keep.role) || pinElement(keep.path, "open"))) || null;
+    if (target && !target.disabled) Navigation.setFocus(target, { scroll: false });
+    else if (target) Navigation.setFocus(pinElement(keep.path, "open"), { scroll: false });
+    else if (keep.fallback) Navigation.setFocus(keep.fallback, { scroll: false });
+  }
+
+  async function updatePinnedFolders(pins, focusTarget) {
+    state.settings.explorerPins = pins;
+    await saveState();
+    renderExplorerPins(focusTarget);
+  }
+
+  async function pinFolderPath(path) {
+    if (!path || isPinnedFolder(path)) return;
+    await updatePinnedFolders(Model.pinFolder(pinnedFolders(), path, getOsName()), { path, role: "open" });
+    showToast(`Закреплено: ${pinLabel(path)}`);
+  }
+
+  async function unpinFolderPath(path) {
+    const pins = pinnedFolders();
+    const index = pins.findIndex((pin) => Model.sameFolder(pin, path, getOsName()));
+    if (index < 0) return;
+    const next = Model.unpinFolder(pins, path, getOsName());
+    // Фокус переходит на соседнюю папку, а если закреплённых не осталось — на «+».
+    const neighbour = next[Math.min(index, next.length - 1)];
+    const focusTarget = elements["explorer-pins"].contains(document.querySelector(".is-focused"))
+      ? { path: neighbour, role: "open", fallback: elements["explorer-pin-current"] }
+      : null;
+    await updatePinnedFolders(next, focusTarget);
+    showToast(`Откреплено: ${pinLabel(path)}`);
+  }
+
+  function manageAttributes(path, name, type) {
+    return `data-manage-path="${escapeHtml(path)}" data-manage-name="${escapeHtml(name)}" data-manage-type="${escapeHtml(type)}"`;
+  }
+
+  // «Переименовать» и «Удалить» — общие для файлов и папок в Проводнике.
+  function manageActionsMarkup(path, name, type) {
+    const attrs = manageAttributes(path, name, type);
+    return `
+      <button class="action-list__item" data-action="rename-entry" ${attrs} data-focusable><span>${icon("edit")}</span><b>Переименовать</b><i>${icon("chevron")}</i></button>
+      <button class="action-list__item action-list__item--danger" data-action="delete-entry" ${attrs} data-focusable><span>${icon("trash")}</span><b>Удалить</b><i>${icon("chevron")}</i></button>`;
+  }
+
+  function fileManagerOpenLabel() {
+    const osName = getOsName();
+    if (osName === "Darwin") return "Открыть в Finder";
+    if (osName === "Windows") return "Открыть в Проводнике Windows";
+    return "Открыть в файловом менеджере";
+  }
+
+  function openFolderActions(path, name) {
+    const pinned = isPinnedFolder(path);
+    const attrs = manageAttributes(path, name, "DIRECTORY");
+    openModal({
+      title: name,
+      eyebrow: "ПАПКА",
+      body: `
+        <div class="action-list" data-folder-action-path="${escapeHtml(path)}">
+          <button class="action-list__item" data-action="open-folder" data-focusable><span>${icon("folder")}</span><b>Открыть</b><i>Enter</i></button>
+          <button class="action-list__item" data-action="${pinned ? "unpin-folder" : "pin-folder"}" data-pin-path="${escapeHtml(path)}" data-focusable><span>${icon("pin")}</span><b>${pinned ? "Убрать из закреплённых" : "Закрепить слева"}</b><i>${icon("chevron")}</i></button>
+          <button class="action-list__item" data-action="open-in-file-manager" ${attrs} data-focusable><span>${icon("exit")}</span><b>${fileManagerOpenLabel()}</b><i>${icon("chevron")}</i></button>
+          ${manageActionsMarkup(path, name, "DIRECTORY")}
+        </div>`
+    });
+  }
+
+  function openFileActions(path, name) {
+    const attrs = manageAttributes(path, name, "FILE");
+    openModal({
+      title: name,
+      eyebrow: "ФАЙЛ",
+      body: `
+        <div class="action-list">
+          <button class="action-list__item" data-action="open-file-default" ${attrs} data-focusable><span>${icon("file")}</span><b>Открыть</b><i>Enter</i></button>
+          ${manageActionsMarkup(path, name, "FILE")}
+        </div>`
+    });
+  }
+
+  // X или правый клик по карточке: меню зависит от того, где карточка и что это за элемент.
+  function openEntryActions(card) {
+    const { entryPath: path, entryName: name, entryType: type } = card.dataset;
+    const inExplorer = Boolean(card.closest("#explorer-grid"));
+    if (Model.isLaunchableEntry(name, type, getOsName())) openExplorerActions(path, name, type, { manage: inExplorer });
+    else if (!inExplorer) return false;
+    else if (type === "DIRECTORY") openFolderActions(path, name);
+    else openFileActions(path, name);
+    return true;
+  }
+
+  function openRenameDialog(path, name, type) {
+    const isFile = type === "FILE";
+    openModal({
+      title: "Переименовать",
+      eyebrow: isFile ? "ФАЙЛ" : Model.isApplicationBundle(name, type, getOsName()) ? "ПРИЛОЖЕНИЕ" : "ПАПКА",
+      body: `
+        <form class="rename-form" id="rename-form">
+          <label class="field field--wide">
+            <span>Новое имя</span>
+            <input name="entryName" value="${escapeHtml(name)}" autocomplete="off" spellcheck="false" data-focusable>
+          </label>
+          <p class="inline-notice rename-form__error" data-rename-error role="alert" hidden></p>
+          <div class="modal-actions">
+            <button type="button" class="action-button" data-action="close-modal" data-focusable>Отмена</button>
+            <button type="submit" class="action-button action-button--primary" data-focusable>Переименовать</button>
+          </div>
+        </form>`,
+      onReady: () => {
+        const form = document.getElementById("rename-form");
+        const input = form.elements.entryName;
+        Navigation.setFocus(input, { scroll: false });
+        // Как в Finder и Проводнике: выделено имя без расширения.
+        const dot = isFile ? name.lastIndexOf(".") : -1;
+        input.setSelectionRange(0, dot > 0 ? dot : name.length);
+        input.addEventListener("input", () => { form.querySelector("[data-rename-error]").hidden = true; });
+        form.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          await renameEntry(path, name, input.value, form);
+        });
+      }
+    });
+  }
+
+  function openDeleteConfirm(path, name, type) {
+    const folder = type === "DIRECTORY" && !Model.isApplicationBundle(name, type, getOsName());
+    openModal({
+      title: `Удалить «${name}»?`,
+      eyebrow: "УДАЛЕНИЕ",
+      body: `
+        <div class="action-list" ${manageAttributes(path, name, type)}>
+          <p class="inline-notice">${folder ? "Папка вместе со всем содержимым будет перемещена" : "Файл будет перемещён"} в Корзину — оттуда ${folder ? "её" : "его"} можно восстановить.</p>
+          <button class="action-list__item" data-action="close-modal" data-focusable><span>${icon("close")}</span><b>Отмена</b><i>Esc</i></button>
+          <button class="action-list__item action-list__item--danger" data-action="confirm-delete-entry" ${manageAttributes(path, name, type)} data-focusable><span>${icon("trash")}</span><b>Переместить в Корзину</b><i>${icon("chevron")}</i></button>
+        </div>`,
+      onReady: () => {
+        // Безопасный вариант по умолчанию: фокус на «Отмена».
+        const cancel = elements["modal-body"].querySelector('[data-action="close-modal"]');
+        if (cancel) Navigation.setFocus(cancel, { scroll: false });
+      }
+    });
+  }
+
+  function explorerCard(entryName) {
+    return [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")].find((card) => card.dataset.entryName === entryName) || null;
+  }
+
+  // После переименования папки пути в библиотеке, закреплённых, папках поиска и фоне указывают на новое место.
+  function updatePathsAfterRename(oldPath, newPath) {
+    const osName = getOsName();
+    const moved = (path) => Model.replacePathPrefix(path, oldPath, newPath, osName);
+    state.library.forEach((item) => {
+      item.path = moved(item.path) || item.path;
+      if (item.coverSource === "file" && item.coverPath) item.coverPath = moved(item.coverPath) || item.coverPath;
+    });
+    state.settings.explorerPins = pinnedFolders().map((pin) => moved(pin) || pin);
+    state.settings.searchPaths = (state.settings.searchPaths || []).map((folder) => moved(folder) || folder);
+    if (state.settings.backgroundPath) state.settings.backgroundPath = moved(state.settings.backgroundPath) || state.settings.backgroundPath;
+    [...folderSizeCache.keys()].forEach((key) => {
+      const next = moved(key);
+      if (next && next !== key) {
+        folderSizeCache.set(next, folderSizeCache.get(key));
+        folderSizeCache.delete(key);
+      }
+    });
+  }
+
+  async function renameEntry(path, oldName, rawName, form) {
+    const osName = getOsName();
+    const errorElement = form.querySelector("[data-rename-error]");
+    const showError = (message) => {
+      errorElement.textContent = message;
+      errorElement.hidden = false;
+    };
+    const problem = Model.validateEntryName(rawName, osName);
+    if (problem) return showError(problem);
+    const newName = String(rawName).trim();
+    if (newName === oldName) {
+      closeModal();
+      return;
+    }
+    if (!hasNativeApi()) {
+      showToast("Переименование доступно в приложении Neutralino", "info");
+      return;
+    }
+    const newPath = Model.renamedPath(path, newName, osName);
+    // Смена только регистра букв («game» → «Game») — это тот же файл, проверять занятость имени не нужно.
+    if (newName.toLocaleLowerCase() !== oldName.toLocaleLowerCase()) {
+      const taken = await globalScope.Neutralino.filesystem.getStats(newPath).then(() => true, () => false);
+      if (taken) return showError("Файл или папка с таким именем уже есть");
+    }
+    try {
+      await globalScope.Neutralino.filesystem.move(path, newPath);
+    } catch (error) {
+      console.error(error);
+      return showError("Не удалось переименовать: нет доступа или файл сейчас используется");
+    }
+    updatePathsAfterRename(path, newPath);
+    await saveState();
+    renderLibrary();
+    renderExplorerPins();
+    await readExplorerDirectory(explorerPath, { focusEntry: newName });
+    returnFocusTarget = explorerCard(newName) || returnFocusTarget;
+    closeModal();
+    showToast(`Переименовано: ${newName}`);
+  }
+
+  async function deleteEntry(path, name) {
+    const osName = getOsName();
+    const cards = [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")];
+    const index = cards.findIndex((card) => card.dataset.entryPath === path);
+    const neighbourName = (cards[index + 1] || cards[index - 1])?.dataset.entryName;
+    if (!hasNativeApi()) {
+      closeModal();
+      showToast("Удаление доступно в приложении Neutralino", "info");
+      return;
+    }
+    try {
+      await globalScope.Neutralino.os.trashItem(path);
+    } catch (error) {
+      console.error(error);
+      showToast("Не удалось переместить в Корзину: нет доступа или файл сейчас используется", "error");
+      return;
+    }
+    // Закреплённые папки внутри удалённой больше не существуют.
+    const pins = pinnedFolders();
+    const remainingPins = pins.filter((pin) => !Model.replacePathPrefix(pin, path, path, osName));
+    if (remainingPins.length !== pins.length) {
+      state.settings.explorerPins = remainingPins;
+      await saveState();
+      renderExplorerPins();
+    }
+    [...folderSizeCache.keys()].forEach((key) => {
+      if (Model.replacePathPrefix(key, path, path, osName)) folderSizeCache.delete(key);
+    });
+    await readExplorerDirectory(explorerPath, { focusEntry: neighbourName });
+    returnFocusTarget = (neighbourName && explorerCard(neighbourName)) || elements["explorer-grid"].querySelector("[data-entry-path]") || null;
+    closeModal();
+    showToast(`Перемещено в Корзину: ${name}`);
+  }
+
+  // После смены папки: если фокус остался на живом элементе (закреплённая папка, панель инструментов) — не трогаем,
+  // иначе ставим его на папку, из которой вышли (при переходе вверх), или на первый элемент списка.
+  function focusAfterExplorerRead(focusEntry) {
+    if (activeSection !== "explorer" || hasOverlayOpen()) {
+      Navigation.ensureFocus();
+      return;
+    }
+    const focused = document.querySelector(".is-focused");
+    const cards = [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")];
+    const target = focusEntry ? cards.find((card) => card.dataset.entryName === focusEntry) : null;
+    if (target) {
+      Navigation.setFocus(target);
+      return;
+    }
+    if (focused?.isConnected && !elements["explorer-grid"].contains(focused)) {
+      Navigation.ensureFocus();
+      return;
+    }
+    if (cards[0]) Navigation.setFocus(cards[0], { scroll: false });
+    else Navigation.ensureFocus();
+  }
+
+  function readExplorerParent() {
+    const parent = Model.parentPath(explorerPath, getOsName());
+    if (!parent || parent === explorerPath) return false;
+    const child = Model.folderDisplayName(explorerPath, getOsName());
+    readExplorerDirectory(parent, { focusEntry: child });
+    return true;
+  }
+
+  async function readExplorerDirectory(path, options = {}) {
     if (!path) return;
     const requestId = ++explorerRequestId;
     explorerStats = new Map();
     explorerPath = path;
+    renderExplorerPins();
     explorerFilter = "";
     selectedExplorerPath = "";
     explorerReadError = false;
@@ -670,9 +1028,14 @@
       }
       renderExplorer();
       syncFolderSizes();
-      requestAnimationFrame(() => Navigation.ensureFocus());
+      requestAnimationFrame(() => focusAfterExplorerRead(options.focusEntry));
     } catch (error) {
       if (requestId !== explorerRequestId) return;
+      if (options.fallbackPath && !Model.sameFolder(options.fallbackPath, path, getOsName())) {
+        showToast(`Папка «${pinLabel(path)}» недоступна — открываю домашнюю`, "info");
+        readExplorerDirectory(options.fallbackPath);
+        return;
+      }
       explorerEntries = [];
       explorerReadError = true;
       renderExplorer();
@@ -828,16 +1191,17 @@
     queueDirectorySearch();
   }
 
-  async function openFileWithDefaultApp(path, name) {
+  // Файл — программой, назначенной в системе; папка (options.folder) — в Finder или Проводнике Windows.
+  async function openFileWithDefaultApp(path, name, options = {}) {
     if (!hasNativeApi()) {
       showToast(`Предпросмотр открытия: ${name}`, "info");
       return;
     }
     try {
       await globalScope.Neutralino.os.execCommand(Platform.buildOpenCommand(path, getOsName()), { background: true });
-      showToast(`Открываю: ${name}`);
+      showToast(options.folder ? `${fileManagerOpenLabel().replace("Открыть", "Открываю")}: ${name}` : `Открываю: ${name}`);
     } catch (error) {
-      showToast("Не удалось открыть файл", "error");
+      showToast(options.folder ? "Не удалось открыть папку" : "Не удалось открыть файл", "error");
       console.error(error);
     }
   }
@@ -916,7 +1280,7 @@
     });
     selectedItemId = "";
     selectedExplorerPath = "";
-    if (section === "explorer" && !explorerEntries.length && explorerPath) readExplorerDirectory(explorerPath);
+    if (section === "explorer" && !explorerEntries.length && explorerPath) readExplorerDirectory(explorerPath, { fallbackPath: homeFolderPath });
     if (options.focus !== false) {
       const first = section === "search"
         ? elements["library-search-input"]
@@ -1337,6 +1701,12 @@
 
   async function launchItem(item) {
     if (!item) return;
+    const launchedAt = recentLaunches.get(item.path);
+    if (launchedAt && Date.now() - launchedAt < LAUNCH_REPEAT_GUARD_MS) {
+      showToast(`«${item.name}» уже запускается`, "info");
+      return;
+    }
+    recentLaunches.set(item.path, Date.now());
     if (!hasNativeApi()) {
       showToast(`Предпросмотр запуска: ${item.name}`, "info");
       return;
@@ -1346,6 +1716,7 @@
       await globalScope.Neutralino.os.execCommand(command, { background: true });
       showToast(Model.isWebUrl(item.path) ? `Открываю в браузере: ${item.name}` : `Запускаю: ${item.name}`);
     } catch (error) {
+      recentLaunches.delete(item.path);
       showToast("Не удалось запустить приложение", "error");
       console.error(error);
     }
@@ -1438,7 +1809,7 @@
     }
   }
 
-  function explorerActionsMarkup(path, name) {
+  function explorerActionsMarkup(path, name, options = {}) {
     const existing = state.library.find((item) => item.path === path);
     return `
       <div class="action-list" data-explorer-action-path="${escapeHtml(path)}" data-explorer-action-name="${escapeHtml(name)}">
@@ -1446,12 +1817,13 @@
         <button class="action-list__item" data-action="add-explorer-library" data-focusable ${existing ? "disabled" : ""}><span>${icon("plus")}</span><b>Добавить в библиотеку</b><i>${icon("chevron")}</i></button>
         <button class="action-list__item" data-action="add-explorer-favorites" data-focusable ${existing ? "disabled" : ""}><span>${icon("star")}</span><b>Добавить в избранное</b><i>${icon("chevron")}</i></button>
         <button class="action-list__item" data-action="launch-explorer-file" data-focusable><span>${icon("play")}</span><b>Запустить сейчас</b><i>Enter</i></button>
+        ${options.manage ? manageActionsMarkup(path, name, options.type || "FILE") : ""}
       </div>`;
   }
 
-  function openExplorerActions(path, name, entryType = "FILE") {
+  function openExplorerActions(path, name, entryType = "FILE", options = {}) {
     const applicationBundle = Model.isApplicationBundle(name, entryType, getOsName());
-    openModal({ title: name, eyebrow: applicationBundle ? "ПРИЛОЖЕНИЕ" : "ФАЙЛ", body: explorerActionsMarkup(path, name) });
+    openModal({ title: name, eyebrow: applicationBundle ? "ПРИЛОЖЕНИЕ" : "ФАЙЛ", body: explorerActionsMarkup(path, name, { ...options, type: entryType }) });
   }
 
   async function addExplorerItem(path, name, favorite) {
@@ -1764,6 +2136,38 @@
         break;
       case "set-explorer-sort": await setExplorerSort(target.dataset.sort); break;
       case "set-explorer-view": await setExplorerView(target.dataset.explorerView); break;
+      case "open-pinned-folder": readExplorerDirectory(target.dataset.pinPath); break;
+      case "move-pinned-folder": {
+        const path = target.dataset.pinPath;
+        await updatePinnedFolders(Model.movePinnedFolder(pinnedFolders(), path, target.dataset.direction, getOsName()), { path, role: target.dataset.pinRole });
+        break;
+      }
+      case "unpin-folder":
+        if (target.closest("#modal")) closeModal();
+        await unpinFolderPath(target.dataset.pinPath);
+        break;
+      case "pin-current-folder": await pinFolderPath(explorerPath); break;
+      case "pin-folder":
+        closeModal();
+        await pinFolderPath(target.dataset.pinPath);
+        break;
+      case "open-in-file-manager":
+        closeModal();
+        await openFileWithDefaultApp(target.dataset.managePath, target.dataset.manageName, { folder: true });
+        break;
+      case "open-file-default":
+        closeModal();
+        await openFileWithDefaultApp(target.dataset.managePath, target.dataset.manageName);
+        break;
+      case "rename-entry": openRenameDialog(target.dataset.managePath, target.dataset.manageName, target.dataset.manageType); break;
+      case "delete-entry": openDeleteConfirm(target.dataset.managePath, target.dataset.manageName, target.dataset.manageType); break;
+      case "confirm-delete-entry": await deleteEntry(target.dataset.managePath, target.dataset.manageName); break;
+      case "open-folder": {
+        const path = target.closest("[data-folder-action-path]").dataset.folderActionPath;
+        closeModal();
+        readExplorerDirectory(path);
+        break;
+      }
       case "exit-application": {
         if (hasNativeApi()) {
           await stopFolderSizeJob();
@@ -1788,11 +2192,9 @@
         if (path) readExplorerDirectory(path);
         break;
       }
-      case "explorer-up": {
-        const parent = Model.parentPath(explorerPath, getOsName());
-        if (parent && parent !== explorerPath) readExplorerDirectory(parent);
+      case "explorer-up":
+        readExplorerParent();
         break;
-      }
       case "pick-executable": {
         const form = target.closest("form");
         const path = await chooseFile([{ name: "Приложения и ярлыки", extensions: ["exe", "lnk", "bat", "cmd", "com", "app", "AppImage", "desktop", "sh"] }, { name: "Все файлы", extensions: ["*"] }], form.elements.path.value);
@@ -1964,7 +2366,7 @@
       if (Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
         openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
       } else if (fileCard.dataset.entryType === "DIRECTORY") readExplorerDirectory(fileCard.dataset.entryPath);
-      else if (fileCard.closest("#library-search-results")) openFileWithDefaultApp(fileCard.dataset.entryPath, fileCard.dataset.entryName);
+      else if (fileCard.closest("#library-search-results, #explorer-grid")) openFileWithDefaultApp(fileCard.dataset.entryPath, fileCard.dataset.entryName);
       else showToast("Для этого типа файла пока нет действий", "info");
       return;
     }
@@ -2018,12 +2420,12 @@
       Sound.play("select");
       selectedItemId = itemCard.dataset.itemId;
       openItemActions(state.library.find((item) => item.id === selectedItemId));
-    } else if (fileCard && Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
+    } else if (fileCard && (fileCard.closest("#explorer-grid") || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
       event.preventDefault();
       updateInputStatus("mouse");
       Sound.play("select");
       selectedExplorerPath = fileCard.dataset.entryPath;
-      openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
+      openEntryActions(fileCard);
     }
   }
 
@@ -2039,11 +2441,7 @@
         return;
       }
       if (activeSection === "explorer") {
-        const parent = Model.parentPath(explorerPath, getOsName());
-        if (parent && parent !== explorerPath) {
-          Sound.play("back");
-          readExplorerDirectory(parent);
-        }
+        if (readExplorerParent()) Sound.play("back");
       }
     } else if (action === "apps") {
       if (!elements["modal-layer"].hidden) return;
@@ -2086,9 +2484,9 @@
       if (itemCard) {
         Sound.play("select");
         openItemActions(state.library.find((item) => item.id === itemCard.dataset.itemId));
-      } else if (fileCard && Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
+      } else if (fileCard && (fileCard.closest("#explorer-grid") || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
         Sound.play("select");
-        openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
+        openEntryActions(fileCard);
       }
     }
   }
@@ -2140,7 +2538,21 @@
       </button>`;
   }
 
+  // Окно лаунчера ушло в фон (запустилась игра, открыто другое окно) или вернулось.
+  function setWindowActive(active) {
+    Navigation.setWindowActive(active);
+    // Вернулись в лаунчер — значит, запущенная игра уже открылась или закрылась: повторный запуск снова разрешён.
+    if (active) recentLaunches.clear();
+  }
+
   function bindEvents() {
+    if (hasNativeApi()) {
+      globalScope.Neutralino.events.on("windowBlur", () => setWindowActive(false));
+      globalScope.Neutralino.events.on("windowFocus", () => setWindowActive(true));
+    } else {
+      globalScope.addEventListener("blur", () => setWindowActive(false));
+      globalScope.addEventListener("focus", () => setWindowActive(true));
+    }
     if (hasNativeApi()) globalScope.Neutralino.events.on("spawnedProcess", handleSpawnedProcess);
     document.addEventListener("click", handleClickSound, true);
     document.addEventListener("click", handleDocumentClick);
@@ -2207,7 +2619,13 @@
     cacheElements();
     await initializeNativeApi();
     await loadState();
-    explorerPath = await defaultExplorerPath();
+    const systemFolders = await resolveSystemFolders();
+    if (!Array.isArray(state.settings.explorerPins)) {
+      state.settings.explorerPins = systemFolders.reduce((pins, path) => Model.pinFolder(pins, path, getOsName()), []);
+      await saveState();
+    }
+    explorerPath = pinnedFolders()[0] || homeFolderPath || await defaultExplorerPath();
+    renderExplorerPins();
     renderLibrary();
     renderExplorer();
     renderDirectorySearch();

@@ -34,6 +34,8 @@
       <symbol id="icon-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
       <symbol id="icon-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
       <symbol id="icon-list" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></symbol>
+      <symbol id="icon-chevron-up" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+      <symbol id="icon-pin" viewBox="0 0 24 24"><path d="M9 4h6l-.8 5.2L17 12v1.5H7V12l2.8-2.8L9 4Z"/><path d="M12 13.5V20"/></symbol>
       <symbol id="icon-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h5"/></symbol>
     </svg>
     <div class="background" aria-hidden="true">
@@ -124,6 +126,15 @@
               <svg class="icon"><use href="#icon-folder"></use></svg> Выбрать папку
             </button>
           </div>
+          <div class="explorer-layout">
+          <aside class="explorer-pins" aria-label="Закреплённые папки">
+            <div class="explorer-pins__header">
+              <p class="eyebrow">ЗАКРЕПЛЁННЫЕ</p>
+              <button type="button" class="icon-button explorer-pins__add" id="explorer-pin-current" data-action="pin-current-folder" data-focusable aria-label="Закрепить текущую папку" title="Закрепить текущую папку"><svg class="icon"><use href="#icon-plus"></use></svg></button>
+            </div>
+            <div class="explorer-pins__list" id="explorer-pins"></div>
+          </aside>
+          <div class="explorer-main">
           <div class="explorer-toolbar">
             <div class="path-bar">
               <button class="icon-button" data-action="explorer-up" data-focusable aria-label="На уровень выше"><svg class="icon"><use href="#icon-arrow-left"></use></svg></button>
@@ -152,6 +163,8 @@
             </div>
           </div>
           <div class="file-grid" id="explorer-grid"></div>
+          </div>
+          </div>
         </section>
 
         <section class="view search-view" data-view="search" aria-labelledby="search-title" hidden>

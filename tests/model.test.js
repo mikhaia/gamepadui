@@ -174,3 +174,55 @@ test("derives a readable name from a link", () => {
   assert.equal(model.nameFromPath("https://store.steampowered.com/"), "store.steampowered.com");
   assert.equal(model.normalizeItem({ path: "https://www.twitch.tv/" }).name, "twitch.tv");
 });
+
+test("normalizes and compares pinned folder paths", () => {
+  assert.equal(model.normalizeFolderPath("C:/Games/", "Windows"), "C:\\Games");
+  assert.equal(model.normalizeFolderPath("D:", "Windows"), "D:\\");
+  assert.equal(model.normalizeFolderPath("/Users/player/", "Darwin"), "/Users/player");
+  assert.equal(model.normalizeFolderPath("/", "Linux"), "/");
+  assert.equal(model.sameFolder("C:\\GAMES\\", "c:\\games", "Windows"), true);
+  assert.equal(model.sameFolder("/Users/Player", "/Users/player", "Darwin"), false);
+});
+
+test("pins, unpins and reorders folders", () => {
+  let pins = model.pinFolder([], "/Users/player/", "Darwin");
+  pins = model.pinFolder(pins, "/Users/player/Games", "Darwin");
+  pins = model.pinFolder(pins, "/Users/player", "Darwin");
+  assert.deepEqual(pins, ["/Users/player", "/Users/player/Games"], "no duplicates");
+  pins = model.pinFolder(pins, "/Volumes/Data", "Darwin");
+  assert.deepEqual(model.movePinnedFolder(pins, "/Volumes/Data", "up", "Darwin"), ["/Users/player", "/Volumes/Data", "/Users/player/Games"]);
+  assert.deepEqual(model.movePinnedFolder(pins, "/Users/player", "down", "Darwin"), ["/Users/player/Games", "/Users/player", "/Volumes/Data"]);
+  assert.deepEqual(model.movePinnedFolder(pins, "/Users/player", "up", "Darwin"), pins, "first stays first");
+  assert.deepEqual(model.movePinnedFolder(pins, "/Volumes/Data", "down", "Darwin"), pins, "last stays last");
+  assert.deepEqual(model.unpinFolder(pins, "/Users/player/Games/", "Darwin"), ["/Users/player", "/Volumes/Data"]);
+  assert.deepEqual(model.unpinFolder(["C:\\Games"], "c:\\games\\", "Windows"), []);
+});
+
+test("shows a readable name for pinned folders", () => {
+  assert.equal(model.folderDisplayName("C:\\Users\\Player\\Downloads\\", "Windows"), "Downloads");
+  assert.equal(model.folderDisplayName("d:\\", "Windows"), "Диск D:");
+  assert.equal(model.folderDisplayName("/", "Darwin"), "Корень диска");
+  assert.equal(model.folderDisplayName("/Users/player/Games", "Darwin"), "Games");
+});
+
+test("validates new names for files and folders", () => {
+  assert.equal(model.validateEntryName("Hades II.exe", "Windows"), "");
+  assert.equal(model.validateEntryName("Отчёт (финал).pdf", "Darwin"), "");
+  assert.equal(model.validateEntryName("back\\slash", "Darwin"), "", "backslash is a normal character on macOS");
+  for (const [name, os] of [["", "Darwin"], ["   ", "Linux"], [".", "Darwin"], ["..", "Windows"], ["a/b", "Darwin"], ["a\\b", "Windows"], ["what?", "Windows"], ["CON", "Windows"], ["nul.txt", "Windows"], ["trailing.", "Windows"], ["x".repeat(256), "Darwin"]]) {
+    assert.notEqual(model.validateEntryName(name, os), "", `${JSON.stringify(name)} on ${os}`);
+  }
+});
+
+test("builds the path after a rename", () => {
+  assert.equal(model.renamedPath("/Users/player/Games/Hades", "Hades II", "Darwin"), "/Users/player/Games/Hades II");
+  assert.equal(model.renamedPath("C:\\Games\\old.exe", " new.exe ", "Windows"), "C:\\Games\\new.exe");
+});
+
+test("rewrites paths inside a renamed folder", () => {
+  assert.equal(model.replacePathPrefix("/Users/player/Games/Hades/Hades.app", "/Users/player/Games", "/Users/player/Игры", "Darwin"), "/Users/player/Игры/Hades/Hades.app");
+  assert.equal(model.replacePathPrefix("/Users/player/Games", "/Users/player/Games/", "/Users/player/Игры", "Darwin"), "/Users/player/Игры");
+  assert.equal(model.replacePathPrefix("/Users/player/GamesOld/x", "/Users/player/Games", "/Users/player/Игры", "Darwin"), null, "not a child");
+  assert.equal(model.replacePathPrefix("c:\\games\\hades\\hades.exe", "C:\\Games", "C:\\Игры", "Windows"), "C:\\Игры\\hades\\hades.exe");
+  assert.equal(model.replacePathPrefix("D:\\Other", "C:\\Games", "C:\\Игры", "Windows"), null);
+});

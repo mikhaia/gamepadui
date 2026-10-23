@@ -24,13 +24,15 @@
     "os.execCommand",
     "os.spawnProcess",
     "os.updateSpawnedProcess",
+    "os.trashItem",
     "net.request",
     "storage.*",
     "filesystem.readDirectory",
     "filesystem.readBinaryFile",
     "filesystem.getJoinedPath",
     "filesystem.getPathParts",
-    "filesystem.getStats"
+    "filesystem.getStats",
+    "filesystem.move"
   ],
   "modes": {
     "window": {

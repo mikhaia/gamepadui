@@ -26,7 +26,15 @@
   let previousButtons = [];
   let axisState = { horizontal: 0, vertical: 0, changedAt: 0 };
   let rafId = 0;
+  let pollTimer = 0;
+  let running = false;
   let lastGamepadName = "";
+  // Окно лаунчера активно (его сообщают события windowFocus/windowBlur от Neutralino).
+  // Пока оно в фоне — например, во время игры, — нажатия на геймпаде не должны ничего делать в лаунчере.
+  let windowActive = true;
+  // После возврата в лаунчер стик, отклонённый ещё в игре, не должен листать меню, пока его не отпустят.
+  let stickLatched = false;
+  const BACKGROUND_POLL_MS = 250;
 
   function visibleFocusableElements() {
     const modal = document.getElementById("modal-layer");
@@ -86,7 +94,12 @@
       const forward = deltaX * directionX + deltaY * directionY;
       if (forward <= 6) continue;
       const perpendicular = Math.abs(deltaX * directionY - deltaY * directionX);
-      const score = forward + perpendicular * 2.4;
+      // Элементы «на одной линии» с текущим (пересекаются с ним по высоте при движении влево/вправо
+      // или по ширине при движении вверх/вниз) получают преимущество — так фокус не «съезжает» в соседний ряд.
+      const inBeam = directionX !== 0
+        ? rect.top < currentRect.bottom && rect.bottom > currentRect.top
+        : rect.left < currentRect.right && rect.right > currentRect.left;
+      const score = (forward + perpendicular * 2.4) * (inBeam ? 0.6 : 1);
       if (score < bestScore) {
         best = candidate;
         bestScore = score;
@@ -167,36 +180,93 @@
     document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "mouse" } }));
   }
 
-  function pollGamepads(now) {
+  function readGamepad() {
     const gamepads = navigator.getGamepads ? [...navigator.getGamepads()].filter(Boolean) : [];
-    const gamepad = gamepads[0];
+    return gamepads[0] || null;
+  }
+
+  function stickDirection(gamepad) {
+    return {
+      horizontal: Math.abs(gamepad.axes[0] || 0) > 0.62 ? Math.sign(gamepad.axes[0]) : 0,
+      vertical: Math.abs(gamepad.axes[1] || 0) > 0.62 ? Math.sign(gamepad.axes[1]) : 0
+    };
+  }
+
+  function inputAllowed() {
+    return windowActive && document.visibilityState !== "hidden";
+  }
+
+  // Запоминаем, что зажато прямо сейчас: кнопка, которую держат с момента игры, не сработает как новое нажатие.
+  function absorbGamepadState(now, gamepad = readGamepad()) {
+    previousButtons = gamepad ? gamepad.buttons.map((button) => button.pressed) : [];
+    const { horizontal, vertical } = gamepad ? stickDirection(gamepad) : { horizontal: 0, vertical: 0 };
+    axisState = { horizontal, vertical, changedAt: now };
+    stickLatched = Boolean(horizontal || vertical);
+  }
+
+  // Пока окно активно — опрос каждый кадр, в фоне — 4 раза в секунду, только чтобы знать текущее состояние.
+  function schedulePoll() {
+    if (!running) return;
+    if (inputAllowed()) rafId = globalScope.requestAnimationFrame(pollGamepads);
+    else pollTimer = globalScope.setTimeout(() => pollGamepads(globalScope.performance.now()), BACKGROUND_POLL_MS);
+  }
+
+  function restartPolling() {
+    globalScope.cancelAnimationFrame(rafId);
+    globalScope.clearTimeout(pollTimer);
+    schedulePoll();
+  }
+
+  function setWindowActive(active) {
+    const next = Boolean(active);
+    if (next === windowActive) return;
+    windowActive = next;
+    absorbGamepadState(globalScope.performance.now());
+    restartPolling();
+  }
+
+  function onVisibilityChange() {
+    absorbGamepadState(globalScope.performance.now());
+    restartPolling();
+  }
+
+  function pollGamepads(now) {
+    const gamepad = readGamepad();
     if (gamepad) {
       if (lastGamepadName !== gamepad.id) {
         lastGamepadName = gamepad.id;
         document.dispatchEvent(new CustomEvent("gamepad-connected", { detail: { id: gamepad.id } }));
       }
 
-      gamepad.buttons.forEach((button, index) => {
-        if (button.pressed && !previousButtons[index] && BUTTONS[index]) {
-          handleAction(BUTTONS[index]);
-          document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "gamepad", id: gamepad.id } }));
-        }
-      });
-      previousButtons = gamepad.buttons.map((button) => button.pressed);
+      if (!inputAllowed()) {
+        absorbGamepadState(now, gamepad);
+      } else {
+        gamepad.buttons.forEach((button, index) => {
+          if (button.pressed && !previousButtons[index] && BUTTONS[index]) {
+            handleAction(BUTTONS[index]);
+            document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "gamepad", id: gamepad.id } }));
+          }
+        });
+        previousButtons = gamepad.buttons.map((button) => button.pressed);
 
-      const horizontal = Math.abs(gamepad.axes[0] || 0) > 0.62 ? Math.sign(gamepad.axes[0]) : 0;
-      const vertical = Math.abs(gamepad.axes[1] || 0) > 0.62 ? Math.sign(gamepad.axes[1]) : 0;
-      const directionChanged = horizontal !== axisState.horizontal || vertical !== axisState.vertical;
-      const repeatReady = now - axisState.changedAt > 230;
-      if ((directionChanged || repeatReady) && (horizontal || vertical)) {
-        const direction = Math.abs(horizontal) >= Math.abs(vertical)
-          ? (horizontal > 0 ? "right" : "left")
-          : (vertical > 0 ? "down" : "up");
-        move(direction);
-        axisState = { horizontal, vertical, changedAt: now };
-        document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "gamepad", id: gamepad.id } }));
-      } else if (!horizontal && !vertical) {
-        axisState = { horizontal: 0, vertical: 0, changedAt: now };
+        const { horizontal, vertical } = stickDirection(gamepad);
+        if (stickLatched) {
+          if (!horizontal && !vertical) stickLatched = false;
+          axisState = { horizontal, vertical, changedAt: now };
+        } else {
+          const directionChanged = horizontal !== axisState.horizontal || vertical !== axisState.vertical;
+          const repeatReady = now - axisState.changedAt > 230;
+          if ((directionChanged || repeatReady) && (horizontal || vertical)) {
+            const direction = Math.abs(horizontal) >= Math.abs(vertical)
+              ? (horizontal > 0 ? "right" : "left")
+              : (vertical > 0 ? "down" : "up");
+            move(direction);
+            axisState = { horizontal, vertical, changedAt: now };
+            document.dispatchEvent(new CustomEvent("input-mode", { detail: { type: "gamepad", id: gamepad.id } }));
+          } else if (!horizontal && !vertical) {
+            axisState = { horizontal: 0, vertical: 0, changedAt: now };
+          }
+        }
       }
     } else {
       previousButtons = [];
@@ -206,7 +276,7 @@
       }
     }
 
-    rafId = globalScope.requestAnimationFrame(pollGamepads);
+    schedulePoll();
   }
 
   function init() {
@@ -217,16 +287,22 @@
       const focusable = event.target.closest?.("[data-focusable]");
       if (focusable) setFocus(focusable, { scroll: false });
     });
+    document.addEventListener("visibilitychange", onVisibilityChange);
     ensureFocus();
-    rafId = globalScope.requestAnimationFrame(pollGamepads);
+    running = true;
+    absorbGamepadState(globalScope.performance.now());
+    schedulePoll();
   }
 
   function destroy() {
+    running = false;
     globalScope.cancelAnimationFrame(rafId);
+    globalScope.clearTimeout(pollTimer);
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     document.removeEventListener("keydown", onKeyDown);
     document.removeEventListener("pointerdown", onPointerDown);
     document.removeEventListener("click", onPointerClick);
   }
 
-  globalScope.GamePadNavigation = { destroy, ensureFocus, init, move, setFocus };
+  globalScope.GamePadNavigation = { destroy, ensureFocus, init, isWindowActive: () => windowActive, move, setFocus, setWindowActive };
 })(window);

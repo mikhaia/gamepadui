@@ -168,6 +168,89 @@
     return parent || "/";
   }
 
+  // Закреплённые папки: путь без завершающего разделителя (кроме корня), в Windows без учёта регистра.
+  function normalizeFolderPath(path, osName) {
+    const value = String(path || "").trim();
+    if (!value) return "";
+    if (osName === "Windows") {
+      const windowsPath = value.replace(/\//g, "\\");
+      if (/^[A-Za-z]:\\?$/.test(windowsPath)) return `${windowsPath.slice(0, 2)}\\`;
+      return windowsPath.replace(/\\+$/, "");
+    }
+    return value === "/" ? "/" : value.replace(/\/+$/, "") || "/";
+  }
+
+  function sameFolder(left, right, osName) {
+    const a = normalizeFolderPath(left, osName);
+    const b = normalizeFolderPath(right, osName);
+    if (!a || !b) return false;
+    return osName === "Windows" ? a.toLocaleLowerCase() === b.toLocaleLowerCase() : a === b;
+  }
+
+  function pinFolder(pins, path, osName) {
+    const list = Array.isArray(pins) ? [...pins] : [];
+    const folder = normalizeFolderPath(path, osName);
+    if (!folder || list.some((pin) => sameFolder(pin, folder, osName))) return list;
+    return [...list, folder];
+  }
+
+  function unpinFolder(pins, path, osName) {
+    return (Array.isArray(pins) ? pins : []).filter((pin) => !sameFolder(pin, path, osName));
+  }
+
+  function movePinnedFolder(pins, path, direction, osName) {
+    const list = Array.isArray(pins) ? [...pins] : [];
+    const from = list.findIndex((pin) => sameFolder(pin, path, osName));
+    const to = direction === "up" ? from - 1 : direction === "down" ? from + 1 : from;
+    if (from < 0 || to < 0 || to >= list.length || to === from) return list;
+    [list[from], list[to]] = [list[to], list[from]];
+    return list;
+  }
+
+  function folderDisplayName(path, osName) {
+    const folder = normalizeFolderPath(path, osName);
+    if (osName === "Windows" && /^[A-Za-z]:\\$/.test(folder)) return `Диск ${folder.slice(0, 2).toUpperCase()}`;
+    if (folder === "/") return "Корень диска";
+    return folder.split(/[\\/]/).filter(Boolean).pop() || folder;
+  }
+
+  const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
+
+  // Возвращает текст ошибки или пустую строку, если имя подходит для файла или папки.
+  function validateEntryName(name, osName) {
+    const value = String(name ?? "");
+    const trimmed = value.trim();
+    if (!trimmed) return "Введите имя";
+    if (trimmed === "." || trimmed === "..") return "Такое имя использовать нельзя";
+    if (trimmed.length > 255) return "Слишком длинное имя";
+    if (trimmed.includes("/")) return "Имя не может содержать символ /";
+    if (/[\u0000-\u001f]/.test(trimmed)) return "Имя содержит недопустимые символы";
+    if (osName === "Windows") {
+      if (/[\\:*?"<>|]/.test(trimmed)) return "Имя не может содержать символы \\ : * ? \" < > |";
+      if (/[. ]$/.test(value)) return "Имя не может заканчиваться точкой или пробелом";
+      if (WINDOWS_RESERVED_NAMES.test(trimmed)) return "Это имя зарезервировано Windows";
+    }
+    return "";
+  }
+
+  function renamedPath(path, newName, osName) {
+    return joinPath(parentPath(path, osName), String(newName).trim(), osName);
+  }
+
+  // Если path совпадает с oldPrefix или лежит внутри него, возвращает тот же путь с newPrefix, иначе null.
+  function replacePathPrefix(path, oldPrefix, newPrefix, osName) {
+    const value = String(path || "");
+    const from = normalizeFolderPath(oldPrefix, osName);
+    if (!value || !from) return null;
+    const separator = osName === "Windows" ? "\\" : "/";
+    const compare = (text) => (osName === "Windows" ? text.toLocaleLowerCase() : text);
+    const normalized = osName === "Windows" ? value.replace(/\//g, "\\") : value;
+    if (compare(normalizeFolderPath(normalized, osName)) === compare(from)) return normalizeFolderPath(newPrefix, osName);
+    const base = from.endsWith(separator) ? from : `${from}${separator}`;
+    if (!compare(normalized).startsWith(compare(base))) return null;
+    return `${normalizeFolderPath(newPrefix, osName)}${separator}${normalized.slice(base.length)}`;
+  }
+
   function matchesLibrarySearch(item, query) {
     const normalized = String(query || "").trim().toLocaleLowerCase();
     if (!normalized) return true;
@@ -212,6 +295,7 @@
     createId,
     extensionOf,
     favoritePosition,
+    folderDisplayName,
     formatFileSize,
     isApplicationBundle,
     isLaunchable,
@@ -221,12 +305,20 @@
     matchesEntrySearch,
     matchesLibrarySearch,
     moveFavorite,
+    movePinnedFolder,
     nameFromPath,
     normalizeCoverSearchResults,
+    normalizeFolderPath,
     normalizeItem,
     orderFavorites,
     parentPath,
-    sortEntries
+    pinFolder,
+    renamedPath,
+    replacePathPrefix,
+    sameFolder,
+    sortEntries,
+    unpinFolder,
+    validateEntryName
   };
 
   globalScope.GamePadModel = api;

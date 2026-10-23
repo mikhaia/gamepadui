@@ -3040,6 +3040,261 @@ body[data-theme="dark"] .display-choice:has(input:checked) .display-choice__badg
   color: #1c171b;
 }
 
+/* Rename dialog in the Explorer. */
+.rename-form {
+  display: grid;
+  gap: 14px;
+}
+
+.rename-form .inline-notice.rename-form__error {
+  margin: -4px 2px 0;
+  color: var(--danger);
+  font-size: 14px;
+}
+
+/* Explorer layout: pinned folders on the left, toolbar and files on the right. */
+.view[data-view="explorer"]:not([hidden]) {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.explorer-layout {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 250px minmax(0, 1fr);
+  gap: 16px;
+}
+
+.explorer-main {
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.explorer-main .file-grid {
+  height: auto;
+  min-height: 0;
+}
+
+.explorer-pins {
+  display: grid;
+  min-height: 0;
+  padding: 10px 8px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(87, 65, 77, 0.04);
+  grid-template-rows: auto minmax(0, 1fr);
+  backdrop-filter: blur(18px);
+}
+
+.explorer-pins__header {
+  display: flex;
+  padding: 2px 4px 8px 10px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.explorer-pins__header .eyebrow {
+  margin: 0;
+}
+
+.explorer-pins__add {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+}
+
+.explorer-pins__add .icon {
+  width: 18px;
+  height: 18px;
+}
+
+.explorer-pins__add:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.explorer-pins__list {
+  display: grid;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 4px;
+  overflow: auto;
+  align-content: start;
+  gap: 4px;
+  scrollbar-width: none;
+}
+
+.explorer-pins__list::-webkit-scrollbar {
+  display: none;
+}
+
+.explorer-pins__empty {
+  margin: 6px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pin-row {
+  position: relative;
+}
+
+.pin-row__main {
+  display: grid;
+  width: 100%;
+  min-height: 56px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  grid-template-columns: 36px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.pin-row__main:hover,
+.pin-row__main.is-focused {
+  background: rgba(var(--accent-rgb, 149, 107, 131), 0.1);
+}
+
+.pin-row__icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: rgba(194, 125, 95, 0.15);
+  color: #a66f5e;
+  place-items: center;
+}
+
+.pin-row__icon .icon {
+  width: 19px;
+  height: 19px;
+}
+
+.pin-row__text {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.pin-row__text b,
+.pin-row__text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin-row__text b {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.pin-row__text small {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+/* ↑ ↓ «Открепить» — отдельной строкой под открытой сейчас закреплённой папкой. */
+.pin-row.is-active {
+  border: 1px solid rgba(var(--accent-rgb, 149, 107, 131), 0.32);
+  border-radius: 12px;
+  background: rgba(var(--accent-rgb, 149, 107, 131), 0.16);
+}
+
+.pin-row.is-active .pin-row__main,
+.pin-row.is-active .pin-row__main:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
+.pin-row.is-active .pin-row__main.is-focused {
+  background: rgba(var(--accent-rgb, 149, 107, 131), 0.1);
+}
+
+.pin-row__actions {
+  display: flex;
+  padding: 0 8px 8px 54px;
+  align-items: center;
+  gap: 4px;
+}
+
+.pin-row__action {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  place-items: center;
+}
+
+.pin-row__action .icon {
+  width: 16px;
+  height: 16px;
+}
+
+.pin-row__action--wide {
+  display: inline-flex;
+  width: auto;
+  margin-left: auto;
+  padding: 0 9px 0 7px;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.pin-row__action:hover,
+.pin-row__action.is-focused {
+  background: rgba(var(--accent-rgb, 149, 107, 131), 0.14);
+  color: var(--accent-strong);
+}
+
+.pin-row__action--danger:hover,
+.pin-row__action--danger.is-focused {
+  background: rgba(182, 95, 93, 0.12);
+  color: var(--danger);
+}
+
+.pin-row__action:disabled {
+  cursor: default;
+  opacity: 0.3;
+}
+
+body[data-theme="dark"] .explorer-pins {
+  border-color: rgba(255, 255, 255, 0.13);
+  background: rgba(31, 29, 33, 0.54);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.025);
+}
+
+body[data-theme="dark"] .pin-row__icon {
+  background: rgba(194, 125, 95, 0.22);
+  color: #dc947b;
+}
+
+@media (max-width: 1180px) {
+  .explorer-layout { grid-template-columns: 210px minmax(0, 1fr); gap: 12px; }
+  .explorer-main .explorer-toolbar { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .explorer-main .explorer-toolbar .path-bar { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+  .explorer-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .explorer-pins { max-height: 190px; }
+}
+
 /* Explorer toolbar: sort dropdown and tiles/list switch after the folder filter. */
 .explorer-toolbar {
   grid-template-columns: minmax(0, 3fr) minmax(210px, 1fr) auto auto;
