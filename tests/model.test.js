@@ -13,6 +13,7 @@ test("normalizes library items and derives a name from the path", () => {
 test("infers and preserves the selected cover source", () => {
   assert.equal(model.normalizeItem({ coverPath: "https://example.com/cover.jpg" }).coverSource, "url");
   assert.equal(model.normalizeItem({ coverPath: "https://example.com/cover.jpg", coverSource: "gamestory" }).coverSource, "gamestory");
+  assert.equal(model.normalizeItem({ coverPath: "https://cdn2.steamgriddb.com/grid/a.png", coverSource: "steamgrid" }).coverSource, "steamgrid");
   assert.equal(model.normalizeItem({ coverPath: "C:\\Covers\\game.png", coverSource: "unknown" }).coverSource, "file");
 });
 
@@ -225,4 +226,55 @@ test("rewrites paths inside a renamed folder", () => {
   assert.equal(model.replacePathPrefix("/Users/player/GamesOld/x", "/Users/player/Games", "/Users/player/Игры", "Darwin"), null, "not a child");
   assert.equal(model.replacePathPrefix("c:\\games\\hades\\hades.exe", "C:\\Games", "C:\\Игры", "Windows"), "C:\\Игры\\hades\\hades.exe");
   assert.equal(model.replacePathPrefix("D:\\Other", "C:\\Games", "C:\\Игры", "Windows"), null);
+});
+
+test("splits a path into clickable parts", () => {
+  assert.deepEqual(model.pathCrumbs("C:\\Users\\chrono\\Downloads", "Windows"), [
+    { label: "C:", path: "C:\\" },
+    { label: "Users", path: "C:\\Users" },
+    { label: "chrono", path: "C:\\Users\\chrono" },
+    { label: "Downloads", path: "C:\\Users\\chrono\\Downloads" }
+  ]);
+  assert.deepEqual(model.pathCrumbs("d:/Games/", "Windows"), [{ label: "D:", path: "D:\\" }, { label: "Games", path: "D:\\Games" }]);
+  assert.deepEqual(model.pathCrumbs("\\\\nas\\media\\Movies", "Windows"), [
+    { label: "\\\\nas\\media", path: "\\\\nas\\media\\" },
+    { label: "Movies", path: "\\\\nas\\media\\Movies" }
+  ]);
+  assert.deepEqual(model.pathCrumbs("/Users/chrono", "Darwin"), [
+    { label: "/", path: "/" },
+    { label: "Users", path: "/Users" },
+    { label: "chrono", path: "/Users/chrono" }
+  ]);
+  assert.deepEqual(model.pathCrumbs(model.COMPUTER_PATH, "Windows"), []);
+});
+
+test("recognizes hidden entries per platform", () => {
+  assert.equal(model.isHiddenEntry(".git", "Darwin"), true);
+  assert.equal(model.isHiddenEntry(".DS_Store", "Windows"), true);
+  assert.equal(model.isHiddenEntry("Icon\r", "Darwin"), true);
+  assert.equal(model.isHiddenEntry("$Recycle.Bin", "Windows"), true);
+  assert.equal(model.isHiddenEntry("System Volume Information", "Windows"), true);
+  assert.equal(model.isHiddenEntry("desktop.ini", "Windows"), true);
+  assert.equal(model.isHiddenEntry("NTUSER.DAT{1234}.TM.blf", "Windows"), true);
+  assert.equal(model.isHiddenEntry("Games", "Windows"), false);
+  assert.equal(model.isHiddenEntry("$price.txt", "Darwin"), false);
+});
+
+test("reads the Windows drive list", () => {
+  const drives = model.parseDrives(JSON.stringify([
+    { name: "D:\\", type: "CDRom", ready: false, label: "", total: null, free: null },
+    { name: "C:\\", type: "Fixed", ready: true, label: "Система", total: 512000000000, free: 120000000000 },
+    { name: "not a drive", type: "Fixed" }
+  ]));
+  assert.deepEqual(drives, [
+    { letter: "C:", path: "C:\\", label: "Система", type: "Fixed", ready: true, total: 512000000000, free: 120000000000 },
+    { letter: "D:", path: "D:\\", label: "", type: "CDRom", ready: false, total: null, free: null }
+  ]);
+  assert.deepEqual(model.parseDrives('{"name":"E:\\\\","type":"Removable","ready":true,"label":"FLASH","total":32000000000,"free":1000}').map((drive) => drive.letter), ["E:"]);
+  assert.deepEqual(model.parseDrives("oops"), []);
+  assert.equal(model.driveTitle(drives[0]), "Система (C:)");
+  assert.equal(model.driveTitle(drives[1]), "CD/DVD-дисковод (D:)");
+  assert.equal(model.isDriveRoot("C:\\", "Windows"), true);
+  assert.equal(model.isDriveRoot("C:\\Users", "Windows"), false);
+  assert.equal(model.isDriveRoot("/", "Darwin"), false);
 });

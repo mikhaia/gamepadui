@@ -13,6 +13,8 @@
   const AppIcons = globalScope.GamePadAppIcons;
   const Autostart = globalScope.GamePadAutostart;
   const IdleScreen = globalScope.GamePadIdleScreen;
+  const SteamGrid = globalScope.GamePadSteamGrid;
+  const RemoteImages = globalScope.GamePadRemoteImages;
   const STORAGE_KEY = "gamepad-ui-state-v1";
   const DEFAULT_STATE = {
     library: [],
@@ -31,6 +33,8 @@
       // Размер папок считается только по явному включению: подсчёт нагружает диск, а в macOS
       // может вызвать запросы доступа к «Документам», «Рабочему столу» и «Загрузкам».
       explorerFolderSizes: false,
+      // Скрытые файлы (с точки, а в Windows ещё служебные вроде $Recycle.Bin) по умолчанию не показываются.
+      explorerShowHidden: false,
       display: null,
       searchPaths: [],
       // Заставка: через сколько минут простоя (0 — никогда), фон, ссылка YouTube, звук и место часов.
@@ -49,10 +53,13 @@
     png: "image/png",
     webp: "image/webp",
     gif: "image/gif",
-    bmp: "image/bmp"
+    bmp: "image/bmp",
+    avif: "image/avif",
+    svg: "image/svg+xml"
   };
   const GAMESTORY_API_URL = "https://api.gamestory.kz/search";
   const GAMESTORY_API_KEY = "FFE334D77DA0AB35525E6F2CD886A1BF";
+  const STEAMGRID_API_KEY = "0df23412cd6a6c4fa5a060fff8c6102b";
 
   let state = structuredClone(DEFAULT_STATE);
   let activeSection = "favorites";
@@ -93,11 +100,12 @@
   // Значки приложений: маленькие, живут до конца сеанса.
   const iconImages = ImageCache.createImageCache(imageCacheOptions);
   let iconLoader = null;
+  // Копии картинок по ссылке на диске (обложки GameStory, SteamGridDB, «По ссылке», фон).
+  let remoteImages = null;
   // Заставка: таймер простоя и открытый сейчас экран (null — закрыт).
   let idleTimerId = 0;
   let idleLastReset = 0;
   let idleSession = null;
-  let idlePointerOrigin = null;
   // Состояние автозапуска, прочитанное из системы при открытии настроек.
   let autostartStatus = null;
   let iconObserver = null;
@@ -129,7 +137,7 @@
       "modal-title", "modal-eyebrow", "modal-body", "toast", "control-hints", "apps-panel", "apps-scrim",
       "apps-toggle", "apps-filter", "apps-list", "apps-meta", "apps-eyebrow", "explorer-sort", "explorer-sort-button",
       "explorer-sort-label", "explorer-sort-menu", "explorer-pins", "explorer-pin-current",
-      "explorer-folder-sizes", "explorer-folder-sizes-switch", "idle-screen", "idle-media", "idle-clock", "idle-time",
+      "explorer-folder-sizes", "explorer-folder-sizes-switch", "explorer-show-hidden", "explorer-hidden-switch", "idle-screen", "idle-media", "idle-clock", "idle-time",
       "idle-date", "idle-note"
     ].forEach((id) => { elements[id] = document.getElementById(id); });
   }
@@ -150,6 +158,8 @@
         await stopBackgroundProcesses();
         globalScope.Neutralino.app.exit();
       });
+      // Сразу: фоновые процессы (скачивание картинок) могут стартовать ещё до bindEvents().
+      globalScope.Neutralino.events.on("spawnedProcess", handleSpawnedProcess);
       nativeReady = true;
       return true;
     } catch (error) {
@@ -186,6 +196,7 @@
       showToast("Не удалось сохранить изменения", "error");
       console.error(error);
     }
+    syncRemoteImages();
   }
 
   function escapeHtml(value) {
@@ -215,14 +226,25 @@
     return [...String(value)].reduce((sum, character) => sum + character.charCodeAt(0), 0) % 6;
   }
 
+  // Картинка по ссылке, уже скачанная в кеш, читается с диска — так она видна и без интернета.
+  function imageSourcePath(path) {
+    return remoteImages?.localPath(path) || path;
+  }
+
   // Картинки с диска берутся из кеша: файл читается один раз, пока его путь где-то используется.
   // options.fresh — перечитать файл (пользователь выбрал его заново).
   async function localImageUrl(path, options) {
     if (!path) return "";
-    if (!ImageCache.isRemoteImage(path) && !hasNativeApi()) return "";
+    const source = imageSourcePath(path);
+    if (!ImageCache.isRemoteImage(source) && !hasNativeApi()) return "";
     try {
-      return await imageCache.get(path, options);
+      return await imageCache.get(source, options);
     } catch (error) {
+      if (source !== path) {
+        // Копию из кеша удалили — показываем по ссылке, а копия скачается заново.
+        remoteImages?.forget(path);
+        return String(path).trim();
+      }
       console.warn(`Unable to read image: ${path}`, error);
       return "";
     }
@@ -238,13 +260,14 @@
       state.settings.idleImagePath,
       idleSession?.config.imagePath,
       ...previews
-    ];
+    ].map(imageSourcePath);
   }
 
   function coverValueForSource(form, source) {
     if (source === "file") return String(form.elements.coverFilePath?.value || "").trim();
     if (source === "url") return String(form.elements.coverUrl?.value || "").trim();
     if (source === "gamestory") return String(form.elements.gameStoryCover?.value || "").trim();
+    if (source === "steamgrid") return String(form.elements.steamGridCover?.value || "").trim();
     return "";
   }
 
@@ -315,6 +338,124 @@
       </button>`).join("");
   }
 
+  // ——— Обложки из SteamGridDB ———
+
+  async function steamGridRequest(url) {
+    if (!hasNativeApi()) throw new Error("native-api-required");
+    if (!STEAMGRID_API_KEY) throw Object.assign(new Error("SteamGridDB API key is missing"), { kind: "no-key" });
+    // Запрос идёт через Neutralino: API SteamGridDB не разрешает обращения из браузера (CORS).
+    const response = await globalScope.Neutralino.net.get(url, { headers: SteamGrid.authHeaders(STEAMGRID_API_KEY), timeout: 15000 });
+    const result = SteamGrid.parseResponse(response?.status, response?.body);
+    if (!result.ok) throw Object.assign(new Error(`SteamGridDB: ${result.message || result.kind}`), { kind: result.kind });
+    return result.data;
+  }
+
+  function steamGridGameMarkup(target, index, active) {
+    return `
+      <button type="button" class="steamgrid-game${active ? " is-active" : ""}" data-action="pick-steamgrid-game" data-steamgrid-index="${index}" data-focusable>
+        <b>${escapeHtml(target.name)}</b>${target.year ? `<small>${target.year}</small>` : ""}
+      </button>`;
+  }
+
+  function steamGridCoverMarkup(cover, selectedCover) {
+    const size = cover.width && cover.height ? `${cover.width}×${cover.height}` : "Обложка";
+    return `
+      <button type="button" class="cover-result cover-result--tile${cover.url === selectedCover ? " is-selected" : ""}" data-cover-result-url="${escapeHtml(cover.url)}" data-cover-result-source="steamgrid" data-focusable title="${escapeHtml(cover.author ? `${size} · ${cover.author}` : size)}">
+        <span class="cover-result__art"><img src="${escapeHtml(cover.thumb)}" alt="" loading="lazy" referrerpolicy="no-referrer"></span>
+        <span class="cover-result__copy"><b>${size}</b><small>${escapeHtml(cover.author || "SteamGridDB")}</small></span>
+      </button>`;
+  }
+
+  // Поиск: сначала игра (по названию, а для ссылок steam:// — ещё и по AppID), потом её обложки.
+  async function searchSteamGridCovers(form, button) {
+    const gamesElement = form.querySelector("[data-steamgrid-games]");
+    const resultsElement = form.querySelector("[data-steamgrid-results]");
+    const query = String(form.elements.steamGridQuery.value || form.elements.name.value || "").trim();
+    const appId = SteamGrid.steamAppIdFromPath(form.elements.path.value);
+    if (!query && !appId) {
+      showToast("Введите название игры", "error");
+      return;
+    }
+    const requestId = (form.steamGridRequestId || 0) + 1;
+    form.steamGridRequestId = requestId;
+    button.disabled = true;
+    gamesElement.innerHTML = "";
+    resultsElement.innerHTML = '<p class="cover-search-message">Ищу игру…</p>';
+    try {
+      const games = query ? SteamGrid.parseGames(await steamGridRequest(SteamGrid.searchUrl(query))) : [];
+      if (form.steamGridRequestId !== requestId) return;
+      const targets = [
+        ...(appId ? [{ type: "steam", id: appId, name: "Эта игра в Steam", year: null }] : []),
+        ...games.slice(0, 8).map((game) => ({ type: "game", id: game.id, name: game.name, year: game.year }))
+      ];
+      form.steamGridTargets = targets;
+      if (!targets.length) {
+        resultsElement.innerHTML = '<p class="cover-search-message">Игра не найдена. Попробуйте название на английском, как в Steam.</p>';
+        return;
+      }
+      gamesElement.innerHTML = targets.map((target, index) => steamGridGameMarkup(target, index, index === 0)).join("");
+      await loadSteamGridCovers(form, 0);
+    } catch (error) {
+      if (form.steamGridRequestId !== requestId) return;
+      resultsElement.innerHTML = `<p class="cover-search-message cover-search-message--error">${escapeHtml(SteamGrid.errorText(error))}</p>`;
+      if (!["no-key", "key"].includes(error?.kind) && error?.message !== "native-api-required") console.error(error);
+    } finally {
+      button.disabled = false;
+      Navigation.ensureFocus();
+    }
+  }
+
+  async function loadSteamGridCovers(form, index, { more = false } = {}) {
+    const target = form.steamGridTargets?.[index];
+    const resultsElement = form.querySelector("[data-steamgrid-results]");
+    if (!target || !resultsElement) return;
+    const page = more ? (form.steamGridPage || 0) + 1 : 0;
+    const requestId = (form.steamGridRequestId || 0) + 1;
+    form.steamGridRequestId = requestId;
+    form.steamGridIndex = index;
+    form.querySelectorAll("[data-steamgrid-index]").forEach((chip) => chip.classList.toggle("is-active", Number(chip.dataset.steamgridIndex) === index));
+    const moreButton = resultsElement.querySelector("[data-steamgrid-more]");
+    if (more && moreButton) {
+      moreButton.disabled = true;
+      moreButton.textContent = "Загружаю…";
+    } else {
+      resultsElement.innerHTML = '<p class="cover-search-message">Загружаю обложки…</p>';
+    }
+    try {
+      const covers = SteamGrid.parseCovers(await steamGridRequest(SteamGrid.gridsUrl(target, { page })));
+      if (form.steamGridRequestId !== requestId) return;
+      form.steamGridPage = page;
+      const selected = form.elements.steamGridCover.value;
+      const markup = covers.map((cover) => steamGridCoverMarkup(cover, selected)).join("");
+      const moreMarkup = covers.length >= SteamGrid.PAGE_SIZE
+        ? '<button type="button" class="action-button steamgrid-more" data-action="more-steamgrid-covers" data-steamgrid-more data-focusable>Показать ещё</button>'
+        : "";
+      if (more) {
+        moreButton?.remove();
+        const firstNew = resultsElement.children.length;
+        resultsElement.insertAdjacentHTML("beforeend", markup + moreMarkup);
+        const focusTarget = resultsElement.children[firstNew];
+        if (focusTarget) Navigation.setFocus(focusTarget);
+      } else {
+        resultsElement.innerHTML = covers.length
+          ? markup + moreMarkup
+          : '<p class="cover-search-message">У этой игры нет вертикальных обложек на SteamGridDB. Попробуйте другую игру из списка.</p>';
+      }
+    } catch (error) {
+      if (form.steamGridRequestId !== requestId) return;
+      if (more && moreButton) {
+        moreButton.disabled = false;
+        moreButton.textContent = "Показать ещё";
+        showToast(SteamGrid.errorText(error), "error");
+      } else {
+        resultsElement.innerHTML = `<p class="cover-search-message cover-search-message--error">${escapeHtml(SteamGrid.errorText(error))}</p>`;
+      }
+      if (!["no-key", "key"].includes(error?.kind) && error?.message !== "native-api-required") console.error(error);
+    } finally {
+      Navigation.ensureFocus();
+    }
+  }
+
   async function applySettings({ refreshBackground = false } = {}) {
     document.body.dataset.theme = state.settings.theme || "light";
     document.body.dataset.accent = state.settings.accent || "plum";
@@ -366,7 +507,7 @@
   function itemCardMarkup(item) {
     const selected = selectedItemId === item.id ? " is-selected" : "";
     // Уже прочитанная обложка вставляется сразу, без повторного чтения и без мигания.
-    const coverUrl = item.coverPath ? imageCache.peek(item.coverPath) : "";
+    const coverUrl = item.coverPath ? imageCache.peek(imageSourcePath(item.coverPath)) : "";
     // Без обложки над инициалами показывается значок приложения или значок по типу.
     return `
       <button class="game-card color-${colorIndex(item.id)}${selected}" data-item-id="${escapeHtml(item.id)}" data-focusable>
@@ -427,7 +568,97 @@
 
   // Размер и дата нужны только для сортировки по ним и для вида «Список».
   function explorerNeedsStats() {
-    return hasNativeApi() && (explorerSortKey() !== "name" || explorerViewMode() === "list");
+    return hasNativeApi() && !Model.isComputerPath(explorerPath) && (explorerSortKey() !== "name" || explorerViewMode() === "list");
+  }
+
+  function explorerShowHidden() {
+    return state.settings.explorerShowHidden === true;
+  }
+
+  async function setExplorerShowHidden(enabled) {
+    state.settings.explorerShowHidden = Boolean(enabled);
+    await saveState();
+    renderExplorer();
+    syncFolderSizes();
+  }
+
+  // Элементы текущей папки без «.» и «..» и, если выключатель выключен, без скрытых.
+  function explorerShownEntries() {
+    const osName = getOsName();
+    const entries = explorerEntries.filter((entry) => entry.entry !== "." && entry.entry !== "..");
+    if (explorerShowHidden() || Model.isComputerPath(explorerPath)) return { entries, hidden: 0 };
+    const shown = entries.filter((entry) => !Model.isHiddenEntry(entry.entry, osName));
+    return { entries: shown, hidden: entries.length - shown.length };
+  }
+
+  // Строка пути по частям: каждая часть, кроме текущей папки, — кнопка перехода. В Windows первым идёт «Этот компьютер».
+  function renderExplorerPath() {
+    const container = elements["explorer-path"];
+    const osName = getOsName();
+    if (!explorerPath) {
+      container.textContent = "Выберите папку";
+      return;
+    }
+    const parts = [
+      ...(osName === "Windows" ? [{ label: "Этот компьютер", path: Model.COMPUTER_PATH, icon: "computer" }] : []),
+      ...Model.pathCrumbs(explorerPath, osName).map((part, index) => (index === 0 && osName !== "Windows" ? { ...part, icon: "drive" } : part))
+    ];
+    container.innerHTML = parts.map((part, index) => {
+      const content = `${part.icon ? icon(part.icon) : ""}<span>${escapeHtml(part.label)}</span>`;
+      const title = escapeHtml(Model.isComputerPath(part.path) ? "Этот компьютер" : part.path);
+      const separator = index ? '<svg class="icon breadcrumbs__separator" aria-hidden="true"><use href="#icon-chevron"></use></svg>' : "";
+      return separator + (index === parts.length - 1
+        ? `<span class="breadcrumbs__current" aria-current="page" title="${title}">${content}</span>`
+        : `<button type="button" class="breadcrumbs__part" data-action="explorer-crumb" data-crumb-path="${escapeHtml(part.path)}" data-crumb-next="${escapeHtml(parts[index + 1].label)}" data-focusable title="${title}">${content}</button>`);
+    }).join("");
+    // Длинный путь прокручен к концу: текущая папка видна всегда.
+    container.scrollLeft = container.scrollWidth;
+  }
+
+  function driveEntryMarkup(item) {
+    const drive = item.drive;
+    const selected = selectedExplorerPath === drive.path ? " is-selected" : "";
+    const list = explorerViewMode() === "list";
+    const usage = drive.ready
+      ? (drive.total ? `свободно ${Model.formatFileSize(drive.free ?? 0)} из ${Model.formatFileSize(drive.total)}` : "")
+      : "нет диска";
+    const used = drive.ready && drive.total ? Math.min(100, Math.max(0, Math.round((1 - (drive.free ?? 0) / drive.total) * 100))) : null;
+    return `
+      <button class="file-card file-card--drive${selected}${drive.ready ? "" : " is-unavailable"}" title="${escapeHtml(drive.path)}" data-entry-name="${escapeHtml(drive.letter)}" data-entry-type="DIRECTORY" data-entry-path="${escapeHtml(drive.path)}" data-drive="${escapeHtml(drive.letter)}" data-drive-ready="${drive.ready}" data-focusable>
+        <span class="file-card__visual is-drive" aria-hidden="true">${icon("drive")}</span>
+        <span class="file-card__info">
+          <span class="file-card__name">${escapeHtml(Model.driveTitle(drive))}</span>
+          <span class="file-card__detail">${detailMarkup([list ? "Диск" : "", usage])}</span>
+          ${used === null ? "" : `<span class="drive-usage${used >= 90 ? " is-full" : ""}" aria-hidden="true"><i style="width: ${used}%"></i></span>`}
+        </span>
+      </button>`;
+  }
+
+  async function listDrives() {
+    if (!hasNativeApi()) {
+      return [
+        { letter: "C:", path: "C:\\", label: "", type: "Fixed", ready: true, total: 512e9, free: 141e9 },
+        { letter: "D:", path: "D:\\", label: "Игры", type: "Fixed", ready: true, total: 2e12, free: 1.2e11 }
+      ];
+    }
+    try {
+      const result = await globalScope.Neutralino.os.execCommand(Platform.buildDriveListCommand(getOsName()));
+      const drives = Model.parseDrives(result?.stdOut);
+      if (drives.length) return drives;
+    } catch (error) {
+      console.warn("Unable to list drives with PowerShell", error);
+    }
+    // Запасной путь: проверяем буквы A–Z (без меток и объёма).
+    const letters = Array.from({ length: 26 }, (_, index) => `${String.fromCharCode(65 + index)}:`);
+    const found = await Promise.all(letters.map(async (letter) => {
+      try {
+        await globalScope.Neutralino.filesystem.getStats(`${letter}\\`);
+        return { letter, path: `${letter}\\`, label: "", type: "", ready: true, total: null, free: null };
+      } catch (error) {
+        return null;
+      }
+    }));
+    return found.filter(Boolean);
   }
 
   function detailMarkup(parts) {
@@ -435,6 +666,7 @@
   }
 
   function fileEntryMarkup(item) {
+    if (item.drive) return driveEntryMarkup(item);
     const path = Model.joinPath(explorerPath, item.entry, getOsName());
     const applicationBundle = Model.isApplicationBundle(item.entry, item.type, getOsName());
     const directory = item.type === "DIRECTORY" && !applicationBundle;
@@ -484,6 +716,7 @@
   }
 
   function explorerFolderSizesNeeded() {
+    if (Model.isComputerPath(explorerPath)) return false;
     return hasNativeApi() && explorerFolderSizesEnabled() && Boolean(FolderSizes.buildCommand(explorerPath, getOsName()));
   }
 
@@ -568,7 +801,7 @@
 
   async function stopBackgroundProcesses() {
     await stopFolderSizeJob();
-    await Promise.all([...processHandlers.keys()].map((id) => globalScope.Neutralino.os.updateSpawnedProcess(id, "exit").catch(() => {})));
+    await Promise.all([...processHandlers.keys()].map((id) => globalScope.Neutralino.os.updateSpawnedProcess(id, "exit").catch(() => { })));
   }
 
   async function stopFolderSizeJob(job = folderSizeJob) {
@@ -577,7 +810,7 @@
     clearTimeout(job.timeout);
     job.cancelled = true;
     if (job.id !== null) {
-      await globalScope.Neutralino.os.updateSpawnedProcess(job.id, "exit").catch(() => {});
+      await globalScope.Neutralino.os.updateSpawnedProcess(job.id, "exit").catch(() => { });
     }
   }
 
@@ -594,7 +827,7 @@
       });
       job.id = process.id;
       if (folderSizeJob !== job || job.cancelled) {
-        await globalScope.Neutralino.os.updateSpawnedProcess(process.id, "exit").catch(() => {});
+        await globalScope.Neutralino.os.updateSpawnedProcess(process.id, "exit").catch(() => { });
         return;
       }
       job.timeout = setTimeout(() => {
@@ -648,6 +881,7 @@
     });
     elements["explorer-grid"].classList.toggle("is-list", view === "list");
     elements["explorer-folder-sizes"].checked = explorerFolderSizesEnabled();
+    elements["explorer-show-hidden"].checked = explorerShowHidden();
     elements["explorer-folder-sizes-switch"].title = getOsName() === "Darwin"
       ? "Размер папок считается в фоне. macOS может спросить разрешение на доступ к «Документам», «Рабочему столу» и «Загрузкам»."
       : "Размер папок считается в фоне; на больших дисках это занимает время.";
@@ -737,23 +971,34 @@
     renderExplorerControls();
     const focused = document.querySelector(".is-focused");
     const focusedPath = focused && elements["explorer-grid"].contains(focused) ? focused.dataset.entryPath : "";
-    const sortedEntries = Model.sortEntries(explorerEntries, getOsName(), { sort: explorerSortKey(), stats: explorerSortStats() });
-    const visibleEntries = sortedEntries.filter((entry) => Model.matchesEntrySearch(entry, explorerFilter));
+    const computer = Model.isComputerPath(explorerPath);
+    const { entries: shownEntries, hidden } = explorerShownEntries();
+    const sortedEntries = computer ? shownEntries : Model.sortEntries(shownEntries, getOsName(), { sort: explorerSortKey(), stats: explorerSortStats() });
+    const visibleEntries = sortedEntries.filter((entry) => (entry.drive
+      ? Model.matchesEntrySearch(Model.driveTitle(entry.drive), explorerFilter)
+      : Model.matchesEntrySearch(entry, explorerFilter)));
     const filtering = Boolean(explorerFilter.trim());
-    elements["explorer-path"].textContent = explorerPath || "Выберите папку";
+    renderExplorerPath();
     elements["explorer-filter"].value = explorerFilter;
+    const countForms = computer ? ["диск", "диска", "дисков"] : ["элемент", "элемента", "элементов"];
+    const hiddenNote = hidden ? ` · скрыто ${hidden}` : "";
     elements["explorer-count"].textContent = explorerReadError ? "" : filtering
-      ? `${visibleEntries.length} из ${explorerEntries.length}`
-      : explorerEntries.length
-        ? `${explorerEntries.length} ${pluralize(explorerEntries.length, ["элемент", "элемента", "элементов"])}`
-      : "";
+      ? `${visibleEntries.length} из ${shownEntries.length}`
+      : shownEntries.length
+        ? `${shownEntries.length} ${pluralize(shownEntries.length, countForms)}${hiddenNote}`
+        : hiddenNote.replace(/^ · с/, "С");
+    const emptyText = hidden
+      ? `<h3>Здесь только скрытые файлы</h3><p>Включите «Скрытые файлы», чтобы их увидеть.</p>`
+      : computer
+        ? "<h3>Диски не найдены</h3><p>Не удалось получить список дисков.</p>"
+        : "<h3>Папка пуста</h3><p>Здесь нет файлов или вложенных папок.</p>";
     elements["explorer-grid"].innerHTML = explorerReadError
       ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("folder")}</div><h3>Не удалось открыть папку</h3><p>Проверьте доступ к папке и попробуйте снова.</p></div>`
       : visibleEntries.length
-      ? visibleEntries.map(fileEntryMarkup).join("")
-      : filtering && explorerEntries.length
-        ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("search")}</div><h3>Ничего не найдено</h3><p>Попробуйте изменить запрос для этой папки.</p></div>`
-        : `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("folder")}</div><h3>Папка пуста</h3><p>Здесь нет файлов или вложенных папок.</p></div>`;
+        ? visibleEntries.map(fileEntryMarkup).join("")
+        : filtering && shownEntries.length
+          ? `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon("search")}</div><h3>Ничего не найдено</h3><p>Попробуйте изменить запрос для этой папки.</p></div>`
+          : `<div class="empty-state empty-state--compact"><div class="empty-state__icon">${icon(computer ? "drive" : "folder")}</div>${emptyText}</div>`;
     watchAppIcons(elements["explorer-grid"]);
     if (focusedPath) {
       const card = [...elements["explorer-grid"].querySelectorAll("[data-entry-path]")].find((element) => element.dataset.entryPath === focusedPath);
@@ -900,7 +1145,8 @@
     return "Открыть в файловом менеджере";
   }
 
-  function openFolderActions(path, name) {
+  // manage: false — без «Переименовать» и «Удалить» (папка из результатов поиска, а не из Проводника).
+  function openFolderActions(path, name, { manage = true } = {}) {
     const pinned = isPinnedFolder(path);
     const attrs = manageAttributes(path, name, "DIRECTORY");
     openModal({
@@ -911,7 +1157,7 @@
           <button class="action-list__item" data-action="open-folder" data-focusable><span>${icon("folder")}</span><b>Открыть</b><i>Enter</i></button>
           <button class="action-list__item" data-action="${pinned ? "unpin-folder" : "pin-folder"}" data-pin-path="${escapeHtml(path)}" data-focusable><span>${icon("pin")}</span><b>${pinned ? "Убрать из закреплённых" : "Закрепить слева"}</b><i>${icon("chevron")}</i></button>
           <button class="action-list__item" data-action="open-in-file-manager" ${attrs} data-focusable><span>${icon("exit")}</span><b>${fileManagerOpenLabel()}</b><i>${icon("chevron")}</i></button>
-          ${manageActionsMarkup(path, name, "DIRECTORY")}
+          ${manage ? manageActionsMarkup(path, name, "DIRECTORY") : ""}
         </div>`
     });
   }
@@ -933,7 +1179,12 @@
   function openEntryActions(card) {
     const { entryPath: path, entryName: name, entryType: type } = card.dataset;
     const inExplorer = Boolean(card.closest("#explorer-grid"));
+    if (card.dataset.drive) {
+      openFolderActions(path, card.querySelector(".file-card__name")?.textContent || name, { manage: false });
+      return true;
+    }
     if (Model.isLaunchableEntry(name, type, getOsName())) openExplorerActions(path, name, type, { manage: inExplorer });
+    else if (!inExplorer && type === "DIRECTORY") openFolderActions(path, name, { manage: false });
     else if (!inExplorer) return false;
     else if (type === "DIRECTORY") openFolderActions(path, name);
     else openFileActions(path, name);
@@ -1140,7 +1391,9 @@
       Navigation.setFocus(target);
       return;
     }
-    if (focused?.isConnected && !elements["explorer-grid"].contains(focused)) {
+    // Фокус на видимом элементе вне сетки (путь, поиск в папке) не трогаем; со скрытого (например,
+    // строки поиска после перехода в Проводник) переводим на первую карточку.
+    if (focused?.isConnected && !elements["explorer-grid"].contains(focused) && focused.offsetParent !== null) {
       Navigation.ensureFocus();
       return;
     }
@@ -1149,6 +1402,12 @@
   }
 
   function readExplorerParent() {
+    if (Model.isComputerPath(explorerPath)) return false;
+    // Выше корня диска в Windows — «Этот компьютер» со списком дисков.
+    if (Model.isDriveRoot(explorerPath, getOsName())) {
+      readExplorerDirectory(Model.COMPUTER_PATH, { focusEntry: explorerPath.slice(0, 2).toUpperCase() });
+      return true;
+    }
     const parent = Model.parentPath(explorerPath, getOsName());
     if (!parent || parent === explorerPath) return false;
     const child = Model.folderDisplayName(explorerPath, getOsName());
@@ -1165,10 +1424,15 @@
     explorerFilter = "";
     selectedExplorerPath = "";
     explorerReadError = false;
-    elements["explorer-path"].textContent = path;
-    elements["explorer-grid"].innerHTML = '<div class="loading-state"><span></span><p>Читаю папку…</p></div>';
+    renderExplorerPath();
+    const computer = Model.isComputerPath(path);
+    elements["explorer-grid"].innerHTML = `<div class="loading-state"><span></span><p>${computer ? "Читаю список дисков…" : "Читаю папку…"}</p></div>`;
     try {
-      if (!hasNativeApi()) {
+      if (computer) {
+        const drives = await listDrives();
+        if (requestId !== explorerRequestId) return;
+        explorerEntries = drives.map((drive) => ({ entry: drive.letter, type: "DIRECTORY", drive }));
+      } else if (!hasNativeApi()) {
         explorerEntries = [
           { entry: "Games", type: "DIRECTORY" },
           { entry: "Example Game.exe", type: "FILE" },
@@ -1200,6 +1464,8 @@
   }
 
   function directorySearchResultMarkup(result) {
+    const launchableEntry = result.launchable ?? Model.isLaunchableEntry(result.name, result.type, getOsName());
+    if (result.type === "DIRECTORY" && !launchableEntry) return searchFolderResultMarkup(result);
     const applicationBundle = Model.isApplicationBundle(result.name, result.type, getOsName());
     const extension = Model.extensionOf(result.name).toUpperCase() || "FILE";
     const existing = state.library.some((item) => item.path === result.path);
@@ -1226,6 +1492,30 @@
       </button>
       <button type="button" class="search-result-row__reveal" data-action="reveal-in-file-manager" data-reveal-path="${escapeHtml(result.path)}" data-focusable aria-label="${revealLabel}" title="${revealLabel}">${icon("folder")}</button>
       </div>`;
+  }
+
+  // Найденная папка: открывается во встроенном Проводнике.
+  function searchFolderResultMarkup(result) {
+    const selected = selectedExplorerPath === result.path ? " is-selected" : "";
+    const revealLabel = fileManagerLabel();
+    return `
+      <div class="search-result-wrap">
+      <button class="file-card search-result-row${selected}" title="${escapeHtml(result.path)}" data-entry-name="${escapeHtml(result.name)}" data-entry-type="DIRECTORY" data-entry-path="${escapeHtml(result.path)}" data-focusable>
+        <span class="file-card__visual is-folder" aria-hidden="true">${icon("folder")}</span>
+        <span class="file-card__info">
+          <span class="file-card__name">${escapeHtml(result.name)}</span>
+          <span class="search-result-row__path">${escapeHtml(result.path)}</span>
+        </span>
+        <span class="file-card__badge search-result-row__badge is-folder">Папка</span>
+      </button>
+      <button type="button" class="search-result-row__reveal" data-action="reveal-in-file-manager" data-reveal-path="${escapeHtml(result.path)}" data-focusable aria-label="${revealLabel}" title="${revealLabel}">${icon("folder")}</button>
+      </div>`;
+  }
+
+  // Открыть папку во встроенном Проводнике (из поиска или меню действий).
+  function openFolderInExplorer(path) {
+    if (activeSection !== "explorer") switchSection("explorer", { focus: false });
+    readExplorerDirectory(path);
   }
 
   function fileManagerLabel() {
@@ -1324,9 +1614,12 @@
 
     const count = directorySearchResults.length;
     const details = [];
-    if (directorySearchOutcome?.truncated) details.push("выдача ограничена");
+    if (!directorySearchOutcome?.resultLimitReached && directorySearchOutcome?.truncated) details.push("просмотрены не все папки");
     if (directorySearchOutcome?.readErrors) details.push(`недоступно папок: ${directorySearchOutcome.readErrors}`);
-    elements["library-search-summary"].textContent = `${count} ${pluralize(count, ["результат", "результата", "результатов"])}${details.length ? ` · ${details.join(" · ")}` : ""}`;
+    const total = directorySearchOutcome?.resultLimitReached
+      ? `Первые ${count} ${pluralize(count, ["результат", "результата", "результатов"])} — уточните запрос`
+      : `${count} ${pluralize(count, ["результат", "результата", "результатов"])}`;
+    elements["library-search-summary"].textContent = `${total}${details.length ? ` · ${details.join(" · ")}` : ""}`;
     elements["library-search-results"].innerHTML = count
       ? directorySearchResults.map(directorySearchResultMarkup).join("")
       : state.settings.searchAllFiles
@@ -1334,7 +1627,7 @@
         : directorySearchPlaceholder(
           "search",
           "Приложения не найдены",
-          `Сейчас ищутся только приложения (${launchableExtensionsText()}). Чтобы найти документы, архивы и другие файлы, включите «Все файлы».`,
+          `Сейчас ищутся только приложения (${launchableExtensionsText()}) и папки. Чтобы найти документы, архивы и другие файлы, включите «Все файлы».`,
           `<button class="action-button action-button--primary" data-action="set-search-scope" data-scope="all" data-focusable>${icon("search")} Искать все файлы</button>`
         );
     watchAppIcons(elements["library-search-results"]);
@@ -1548,6 +1841,58 @@
     } catch (error) {
       console.warn("App icons are unavailable", error);
     }
+  }
+
+  // Картинки по ссылке скачиваются в папку кеша и дальше показываются с диска, даже без интернета.
+  async function setupRemoteImages() {
+    const osName = getOsName();
+    if (!hasNativeApi() || !RemoteImages) return;
+    try {
+      const cachePath = await globalScope.Neutralino.os.getPath("cache");
+      if (!cachePath) return;
+      const { filesystem, os } = globalScope.Neutralino;
+      const store = RemoteImages.createRemoteImageStore({
+        osName,
+        directory: RemoteImages.imagesDirectory(cachePath, osName),
+        list: (directory) => filesystem.readDirectory(directory),
+        readHead: async (file) => new Uint8Array(await filesystem.readBinaryFile(file, { pos: 0, size: 512 })),
+        move: (from, to) => filesystem.move(from, to),
+        remove: (file) => filesystem.remove(file),
+        spawn: spawnWithEvents,
+        write: (id, text) => os.updateSpawnedProcess(id, "stdIn", text),
+        end: (id) => os.updateSpawnedProcess(id, "stdInEnd"),
+        kill: (id) => os.updateSpawnedProcess(id, "exit"),
+        onReady: showDownloadedImage,
+        warn: (...args) => console.warn(...args)
+      });
+      await store.load();
+      remoteImages = store;
+      syncRemoteImages();
+    } catch (error) {
+      console.warn("Image cache is unavailable", error);
+    }
+  }
+
+  // Все картинки, которые могут быть ссылками: обложки, фон, заставка.
+  function syncRemoteImages() {
+    remoteImages?.sync([
+      ...state.library.map((item) => item.coverPath),
+      state.settings.backgroundPath,
+      state.settings.idleImagePath
+    ]);
+  }
+
+  // Копия скачалась: обложки, которые не загрузились по ссылке (нет сети, сайт не даёт
+  // показывать картинку на чужих страницах), берутся из кеша.
+  function showDownloadedImage(url) {
+    document.querySelectorAll("img[data-cover-path]").forEach(async (image) => {
+      if (image.dataset.coverPath !== url) return;
+      if (image.getAttribute("src") && image.complete && image.naturalWidth > 0) return;
+      const imageUrl = await localImageUrl(url);
+      if (!imageUrl || image.dataset.coverPath !== url) return;
+      image.src = imageUrl;
+      image.classList.add("is-loaded");
+    });
   }
 
   const DEFAULT_ICON_SYMBOLS = { web: "globe", link: "link", script: "terminal", app: "app-window" };
@@ -1825,6 +2170,7 @@
     const fileCover = coverSource === "file" ? normalized.coverPath : "";
     const urlCover = coverSource === "url" ? normalized.coverPath : "";
     const gameStoryCover = coverSource === "gamestory" ? normalized.coverPath : "";
+    const steamGridCover = coverSource === "steamgrid" ? normalized.coverPath : "";
     return `
       <form class="item-form" id="item-form" data-form-item-id="${escapeHtml(item.id || "")}">
         <label class="field field--wide">
@@ -1857,6 +2203,10 @@
               <input type="radio" name="coverSource" value="gamestory" ${coverSource === "gamestory" ? "checked" : ""} data-focusable>
               <span>GameStory</span>
             </label>
+            <label class="cover-source-choice">
+              <input type="radio" name="coverSource" value="steamgrid" ${coverSource === "steamgrid" ? "checked" : ""} data-focusable>
+              <span>SteamGridDB</span>
+            </label>
           </div>
           <div class="cover-source-panel" data-cover-source-panel="file" ${coverSource === "file" ? "" : "hidden"}>
             <div class="field__picker">
@@ -1874,7 +2224,16 @@
             </div>
             <div class="cover-search-results" data-cover-search-results aria-live="polite"></div>
           </div>
+          <div class="cover-source-panel cover-source-panel--steamgrid" data-cover-source-panel="steamgrid" ${coverSource === "steamgrid" ? "" : "hidden"}>
+            <div class="field__picker">
+              <input class="cover-source-input" name="steamGridQuery" value="${escapeHtml(item.name || "")}" placeholder="Название игры, лучше на английском" autocomplete="off" data-focusable>
+              <button type="button" class="action-button" data-action="search-steamgrid-cover" data-focusable>${icon("search")} Найти</button>
+            </div>
+            <div class="steamgrid-games" data-steamgrid-games></div>
+            <div class="cover-search-results cover-search-results--tiles" data-steamgrid-results aria-live="polite"></div>
+          </div>
           <input type="hidden" name="gameStoryCover" value="${escapeHtml(gameStoryCover)}">
+          <input type="hidden" name="steamGridCover" value="${escapeHtml(steamGridCover)}">
           <input type="hidden" name="coverPath" value="${escapeHtml(normalized.coverPath)}">
           <div class="cover-preview" data-cover-preview>
             <span>Обложка не выбрана</span>
@@ -1945,7 +2304,7 @@
             showToast("Добавьте https:// в начало ссылки, например https://" + updated.path, "error");
             return;
           }
-          if (["url", "gamestory"].includes(updated.coverSource) && updated.coverPath && !/^https?:\/\//i.test(updated.coverPath)) {
+          if (["url", "gamestory", "steamgrid"].includes(updated.coverSource) && updated.coverPath && !/^https?:\/\//i.test(updated.coverPath)) {
             showToast("Укажите корректную ссылку на обложку", "error");
             return;
           }
@@ -1996,7 +2355,7 @@
       body: `
         <div class="action-list" data-action-item-id="${escapeHtml(item.id)}">
           <button class="action-list__item" data-action="launch-current-item" data-focusable><span>${icon("play")}</span><b>Запустить</b><i>Enter</i></button>
-          <button class="action-list__item" data-action="toggle-favorite" data-focusable><span>${icon("star")}</span><b>${item.favorite ? "Убрать из избранного" : "Добавить в избранное"}</b><i>X</i></button>
+          <button class="action-list__item" data-action="toggle-favorite" data-focusable><span>${icon("star")}</span><b>${item.favorite ? "Убрать из избранного" : "Добавить в избранное"}</b><i></i></button>
           ${orderAction}
           <button class="action-list__item" data-action="edit-current-item" data-focusable><span>${icon("edit")}</span><b>Изменить</b><i>${icon("chevron")}</i></button>
           <button class="action-list__item action-list__item--danger" data-action="remove-current-item" data-focusable><span>${icon("trash")}</span><b>Удалить из библиотеки</b><i>${icon("chevron")}</i></button>
@@ -2148,12 +2507,12 @@
         ${displayChoiceMarkup("auto", "Автоматически", "Монитор, который выберет система", !preference, icon("view"))}
         ${missing}
         ${displays.map((display) => displayChoiceMarkup(
-          String(display.index),
-          display.label,
-          `${display.pixelWidth} × ${display.pixelHeight} · ${Displays.relativePosition(display, displays)}`,
-          saved === display,
-          String(display.index + 1)
-        )).join("")}
+      String(display.index),
+      display.label,
+      `${display.pixelWidth} × ${display.pixelHeight} · ${Displays.relativePosition(display, displays)}`,
+      saved === display,
+      String(display.index + 1)
+    )).join("")}
       </div>`;
   }
 
@@ -2256,13 +2615,13 @@
             <div><h3>Цвет акцента</h3><p>Используется для фокуса, активного раздела, кнопок и пиктограмм.</p></div>
             <div class="accent-options" role="radiogroup" aria-label="Цвет акцента">
               ${[
-                ["plum", "Сливовый", "#956b83"],
-                ["blue", "Черничный", "#647fa3"],
-                ["terracotta", "Терракота", "#b56f58"],
-                ["amber", "Медовый", "#a97932"],
-                ["rose", "Пыльная роза", "#ad6476"],
-                ["lavender", "Лавандовый", "#796fa6"]
-              ].map(([value, label, color]) => `
+          ["plum", "Сливовый", "#956b83"],
+          ["blue", "Черничный", "#647fa3"],
+          ["terracotta", "Терракота", "#b56f58"],
+          ["amber", "Медовый", "#a97932"],
+          ["rose", "Пыльная роза", "#ad6476"],
+          ["lavender", "Лавандовый", "#796fa6"]
+        ].map(([value, label, color]) => `
                 <label class="accent-choice" style="--swatch: ${color}">
                   <input type="radio" name="accent" value="${value}" ${state.settings.accent === value || (!state.settings.accent && value === "plum") ? "checked" : ""} data-focusable>
                   <span></span><b>${label}</b>
@@ -2292,7 +2651,7 @@
             <div class="settings-section__controls" id="display-options"><p class="muted-copy">Определяю мониторы…</p></div>
           </section>
           <section class="settings-section">
-            <div><h3>Заставка</h3><p>Большие часы на весь экран, когда лаунчером долго не пользуются. Любая кнопка, клавиша или движение мыши закрывают её и больше ничего не делают.</p></div>
+            <div><h3>Заставка</h3><p>Большие часы на весь экран, когда лаунчером долго не пользуются. Любая кнопка, клавиша или клик закрывают её и больше ничего не делают; движение мыши — нет.</p></div>
             ${idleSettingsMarkup()}
           </section>
           <section class="settings-section">
@@ -2557,7 +2916,8 @@
   const SYSTEM_ACTIONS = {
     sleep: { title: "Перевести компьютер в сон?", notice: "Открытые программы продолжат работу после пробуждения.", label: "Перевести в сон", icon: "moon", danger: false },
     restart: { title: "Перезагрузить компьютер?", notice: "Несохранённые данные в открытых программах могут пропасть.", label: "Перезагрузить", icon: "restart", danger: true },
-    shutdown: { title: "Выключить компьютер?", notice: "Несохранённые данные в открытых программах могут пропасть.", label: "Выключить", icon: "power", danger: true }
+    shutdown: { title: "Выключить компьютер?", notice: "Несохранённые данные в открытых программах могут пропасть.", label: "Выключить", icon: "power", danger: true },
+    logout: { title: "Выйти из системы?", notice: "Сеанс пользователя завершится, все программы закроются. Несохранённые данные в них могут пропасть.", label: "Выйти из системы", icon: "logout", danger: true }
   };
 
   function requestSystemAction(action) {
@@ -2638,7 +2998,8 @@
       case "open-folder": {
         const path = target.closest("[data-folder-action-path]").dataset.folderActionPath;
         closeModal();
-        readExplorerDirectory(path);
+        // Сначала окно закроется и вернёт фокус, потом переходим в папку (из поиска — с переключением на Проводник).
+        setTimeout(() => openFolderInExplorer(path), 180);
         break;
       }
       case "exit-application": {
@@ -2683,6 +3044,10 @@
       case "explorer-up":
         readExplorerParent();
         break;
+      case "explorer-crumb":
+        // Фокус встанет на папку, из которой поднялись.
+        readExplorerDirectory(target.dataset.crumbPath, { focusEntry: target.dataset.crumbNext });
+        break;
       case "pick-executable": {
         const form = target.closest("form");
         const path = await chooseFile([{ name: "Приложения и ярлыки", extensions: ["exe", "lnk", "bat", "cmd", "com", "app", "AppImage", "desktop", "sh"] }, { name: "Все файлы", extensions: ["*"] }], form.elements.path.value);
@@ -2723,6 +3088,13 @@
           target.disabled = false;
           Navigation.ensureFocus();
         }
+        break;
+      }
+      case "search-steamgrid-cover": await searchSteamGridCovers(target.closest("form"), target); break;
+      case "pick-steamgrid-game": await loadSteamGridCovers(target.closest("form"), Number(target.dataset.steamgridIndex)); break;
+      case "more-steamgrid-covers": {
+        const form = target.closest("form");
+        await loadSteamGridCovers(form, form.steamGridIndex || 0, { more: true });
         break;
       }
       case "pick-background": {
@@ -2830,7 +3202,8 @@
     if (coverResult) {
       const form = coverResult.closest("form");
       const coverUrl = coverResult.dataset.coverResultUrl;
-      form.elements.gameStoryCover.value = coverUrl;
+      const field = coverResult.dataset.coverResultSource === "steamgrid" ? "steamGridCover" : "gameStoryCover";
+      form.elements[field].value = coverUrl;
       form.elements.coverPath.value = coverUrl;
       form.querySelectorAll("[data-cover-result-url]").forEach((result) => result.classList.toggle("is-selected", result === coverResult));
       updateCoverPreview(form, coverUrl);
@@ -2847,9 +3220,11 @@
     const fileCard = event.target.closest("[data-entry-path]");
     if (fileCard) {
       selectedExplorerPath = fileCard.dataset.entryPath;
-      if (Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
+      if (fileCard.dataset.driveReady === "false") {
+        showToast(`В дисководе ${fileCard.dataset.drive} нет диска`, "info");
+      } else if (Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName())) {
         openExplorerActions(fileCard.dataset.entryPath, fileCard.dataset.entryName, fileCard.dataset.entryType);
-      } else if (fileCard.dataset.entryType === "DIRECTORY") readExplorerDirectory(fileCard.dataset.entryPath);
+      } else if (fileCard.dataset.entryType === "DIRECTORY") openFolderInExplorer(fileCard.dataset.entryPath);
       else if (fileCard.closest("#library-search-results, #explorer-grid")) openFileWithDefaultApp(fileCard.dataset.entryPath, fileCard.dataset.entryName);
       else showToast("Для этого типа файла пока нет действий", "info");
       return;
@@ -2904,7 +3279,7 @@
       Sound.play("select");
       selectedItemId = itemCard.dataset.itemId;
       openItemActions(state.library.find((item) => item.id === selectedItemId));
-    } else if (fileCard && (fileCard.closest("#explorer-grid") || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
+    } else if (fileCard && (fileCard.closest("#explorer-grid") || fileCard.dataset.entryType === "DIRECTORY" || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
       event.preventDefault();
       updateInputStatus("mouse");
       Sound.play("select");
@@ -2968,7 +3343,7 @@
       if (itemCard) {
         Sound.play("select");
         openItemActions(state.library.find((item) => item.id === itemCard.dataset.itemId));
-      } else if (fileCard && (fileCard.closest("#explorer-grid") || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
+      } else if (fileCard && (fileCard.closest("#explorer-grid") || fileCard.dataset.entryType === "DIRECTORY" || Model.isLaunchableEntry(fileCard.dataset.entryName, fileCard.dataset.entryType, getOsName()))) {
         Sound.play("select");
         openEntryActions(fileCard);
       }
@@ -3048,7 +3423,6 @@
     const screen = elements["idle-screen"];
     const session = { config, openedAt: globalScope.performance.now(), clockTimer: 0, shiftTimer: 0, video: null };
     idleSession = session;
-    idlePointerOrigin = null;
     screen.dataset.clockPosition = config.clockPosition;
     screen.dataset.source = "launcher";
     elements["idle-media"].replaceChildren();
@@ -3222,17 +3596,9 @@
       event.stopImmediatePropagation();
       interceptIdleInput();
     }, true);
-    globalScope.addEventListener("pointermove", (event) => {
-      if (!idleSession) {
-        noteActivity();
-        return;
-      }
-      // Небольшое дрожание мыши заставку не закрывает.
-      if (!idlePointerOrigin) {
-        idlePointerOrigin = { x: event.clientX, y: event.clientY };
-        return;
-      }
-      if (Math.hypot(event.clientX - idlePointerOrigin.x, event.clientY - idlePointerOrigin.y) > 24) interceptIdleInput();
+    // Движение мыши заставку не закрывает (только откладывает её, пока она не открыта); закрывает клик.
+    globalScope.addEventListener("pointermove", () => {
+      if (!idleSession) noteActivity();
     }, true);
     globalScope.addEventListener("wheel", () => {
       if (idleSession) interceptIdleInput();
@@ -3307,6 +3673,7 @@
 
   function bindEvents() {
     elements["explorer-folder-sizes"].addEventListener("change", (event) => setExplorerFolderSizes(event.currentTarget.checked));
+    elements["explorer-show-hidden"].addEventListener("change", (event) => setExplorerShowHidden(event.currentTarget.checked));
     if (hasNativeApi()) {
       globalScope.Neutralino.events.on("windowBlur", () => setWindowActive(false));
       globalScope.Neutralino.events.on("windowFocus", () => setWindowActive(true));
@@ -3314,11 +3681,17 @@
       globalScope.addEventListener("blur", () => setWindowActive(false));
       globalScope.addEventListener("focus", () => setWindowActive(true));
     }
-    if (hasNativeApi()) globalScope.Neutralino.events.on("spawnedProcess", handleSpawnedProcess);
     document.addEventListener("click", handleClickSound, true);
+    // Обложка по ссылке не загрузилась (нет интернета, копии ещё нет) — остаются инициалы.
+    document.addEventListener("error", (event) => {
+      if (event.target instanceof HTMLImageElement && event.target.matches("img[data-cover-path]")) {
+        event.target.classList.remove("is-loaded");
+      }
+    }, true);
     document.addEventListener("click", handleDocumentClick);
     document.addEventListener("contextmenu", handleContextMenu);
     document.addEventListener("gamepad-action", handleGamepadAction);
+    document.addEventListener("range-step", () => Sound.play("move"));
     document.addEventListener("gamepad-focus", (event) => {
       if (event.detail?.source === "move") Sound.play("move");
       const itemCard = event.target.closest(".game-card[data-item-id]");
@@ -3381,6 +3754,7 @@
     await initializeNativeApi();
     await loadState();
     await setupAppIcons();
+    await setupRemoteImages();
     const systemFolders = await resolveSystemFolders();
     if (!Array.isArray(state.settings.explorerPins)) {
       state.settings.explorerPins = systemFolders.reduce((pins, path) => Model.pinFolder(pins, path, getOsName()), []);

@@ -40,9 +40,12 @@ test("recursively finds launchable entries and ignores unsupported files", async
   });
   assert.deepEqual(outcome.results.map((result) => result.path), [
     "C:\\Games\\Hades\\Hades.exe",
-    "C:\\Games\\Hades\\Hades.url"
+    "C:\\Games\\Hades\\Hades.url",
+    "C:\\Games\\Hades"
   ]);
+  assert.equal(outcome.results[2].type, "DIRECTORY");
   assert.equal(outcome.directoriesScanned, 2);
+  assert.equal(outcome.truncated, false);
 });
 
 test("returns a macOS app bundle as a result without traversing inside it", async () => {
@@ -95,15 +98,18 @@ test("finds any file in all-files mode and lists applications first", async () =
     isLaunchableEntry: model.isLaunchableEntry
   };
   const appsOnly = await search.find(options);
-  assert.deepEqual(appsOnly.results.map((result) => result.name), ["Hades.app", "run-hades.sh"]);
+  assert.deepEqual(appsOnly.results.map((result) => result.name), ["Hades.app", "run-hades.sh", "Hades"]);
 
   const allFiles = await search.find({ ...options, includeAllFiles: true });
   assert.deepEqual(allFiles.results.map((result) => [result.name, result.launchable]), [
     ["Hades.app", true],
     ["run-hades.sh", true],
+    ["Hades", false],
     ["Hades Manual.pdf", false],
     ["hades-cover.png", false]
   ]);
+  const withoutFolders = await search.find({ ...options, includeFolders: false });
+  assert.deepEqual(withoutFolders.results.map((result) => result.name), ["Hades.app", "run-hades.sh"]);
 });
 
 test("skips hidden entries and never walks to the parent folder", async () => {
@@ -129,3 +135,21 @@ test("skips hidden entries and never walks to the parent folder", async () => {
   assert.deepEqual(outcome.results.map((result) => result.path), ["C:\\Games\\Hades.exe"]);
   assert.deepEqual(reads, ["C:\\Games"]);
 });
+
+test("stops at 50 results and reports that the list is cut", async () => {
+  const tree = { "D:\\Photos": Array.from({ length: 80 }, (_, index) => ({ entry: `trip-${index}.jpg`, type: "FILE" })) };
+  const outcome = await search.find({
+    roots: ["D:\\Photos"],
+    query: "trip",
+    osName: "Windows",
+    includeAllFiles: true,
+    readDirectory: async (path) => tree[path] || [],
+    joinPath: model.joinPath,
+    isLaunchableEntry: model.isLaunchableEntry
+  });
+  assert.equal(search.DEFAULT_RESULT_LIMIT, 50);
+  assert.equal(outcome.results.length, 50);
+  assert.equal(outcome.resultLimitReached, true);
+  assert.equal(outcome.truncated, true);
+});
+

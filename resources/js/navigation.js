@@ -81,11 +81,37 @@
     setFocus(elements.find((element) => !element.hasAttribute("data-autofocus-skip")) || elements[0], { scroll: false });
   }
 
+  function isRange(element) {
+    return element instanceof HTMLInputElement && element.type === "range" && !element.disabled;
+  }
+
+  // Ползунок: влево/вправо меняют значение примерно на 5 % диапазона (или на data-nav-step),
+  // вверх/вниз уводят фокус как обычно.
+  function adjustRange(input, direction) {
+    const min = Number(input.min || 0);
+    const max = Number(input.max || 100);
+    const step = Number(input.step) > 0 ? Number(input.step) : 1;
+    const navStep = Number(input.dataset.navStep) > 0
+      ? Number(input.dataset.navStep)
+      : Math.max(step, Math.round((max - min) / 20 / step) * step);
+    const current = Number(input.value);
+    const next = Math.min(max, Math.max(min, current + (direction === "right" ? navStep : -navStep)));
+    if (next === current) return;
+    input.value = String(next);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    input.dispatchEvent(new CustomEvent("range-step", { bubbles: true, detail: { value: next } }));
+  }
+
   function move(direction) {
     const elements = visibleFocusableElements();
     if (!elements.length) return;
     if (!elements.includes(activeElement)) {
       setFocus(elements[0], { source: "move" });
+      return;
+    }
+    if ((direction === "left" || direction === "right") && isRange(activeElement)) {
+      adjustRange(activeElement, direction);
       return;
     }
 
@@ -134,9 +160,10 @@
     else dispatch(action);
   }
 
-  // Переключатели и кнопки-инпуты управляются как обычные элементы: стрелки двигают фокус, Enter нажимает
-  // (без этого Enter на флажке отправлял бы всю форму настроек). Текстовые поля и ползунки клавиши получают сами.
-  const NON_TYPING_INPUTS = new Set(["checkbox", "radio", "button", "submit", "reset", "image", "file", "color"]);
+  // Переключатели, ползунки и кнопки-инпуты управляются как обычные элементы: стрелки обрабатывает навигация
+  // (на ползунке влево/вправо меняют значение), Enter нажимает — без этого Enter на флажке отправлял бы
+  // всю форму настроек. Клавиши в текстовых полях остаются полю.
+  const NON_TYPING_INPUTS = new Set(["checkbox", "radio", "range", "button", "submit", "reset", "image", "file", "color"]);
 
   function isTypingTarget(target) {
     if (target instanceof HTMLInputElement) return !NON_TYPING_INPUTS.has(target.type);

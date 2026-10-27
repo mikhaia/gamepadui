@@ -2,7 +2,7 @@
   "use strict";
 
   const MIN_QUERY_LENGTH = 3;
-  const DEFAULT_RESULT_LIMIT = 160;
+  const DEFAULT_RESULT_LIMIT = 50;
   const DEFAULT_DIRECTORY_LIMIT = 2500;
   const DEFAULT_CONCURRENCY = 6;
 
@@ -19,6 +19,12 @@
     return Boolean(normalizedQuery) && String(path || "").toLocaleLowerCase().includes(normalizedQuery);
   }
 
+  // Сначала приложения, потом папки, потом остальные файлы.
+  function resultRank(result) {
+    if (result.launchable) return 0;
+    return result.type === "DIRECTORY" ? 1 : 2;
+  }
+
   async function find(options) {
     const {
       roots = [],
@@ -28,6 +34,7 @@
       joinPath,
       isLaunchableEntry,
       includeAllFiles = false,
+      includeFolders = true,
       shouldCancel = () => false,
       resultLimit = DEFAULT_RESULT_LIMIT,
       directoryLimit = DEFAULT_DIRECTORY_LIMIT,
@@ -47,12 +54,15 @@
     let directoryLimitReached = false;
     let resultLimitReached = false;
 
+    const addResult = (result) => {
+      if (resultPaths.has(result.path) || results.length >= resultLimit) return;
+      resultPaths.add(result.path);
+      results.push(result);
+      if (results.length >= resultLimit) resultLimitReached = true;
+    };
+
     const batchSize = Math.max(1, Number(concurrency) || 1);
-    while (queue.length && !shouldCancel()) {
-      if (results.length >= resultLimit) {
-        resultLimitReached = true;
-        break;
-      }
+    while (queue.length && !shouldCancel() && !resultLimitReached) {
       if (directoriesScanned >= directoryLimit) {
         directoryLimitReached = true;
         break;
@@ -80,21 +90,17 @@
 
       for (const { directory, entries } of batchEntries) {
         for (const entry of entries || []) {
-          if (shouldCancel()) break;
+          if (shouldCancel() || resultLimitReached) break;
           // Скрытые файлы и папки (.git, .DS_Store и т. п.) только засоряют выдачу и тратят лимит папок.
           if (!entry?.entry || String(entry.entry).startsWith(".")) continue;
           const path = joinPath(directory, entry.entry, osName);
           const launchable = isLaunchableEntry(entry.entry, entry.type, osName);
+          const matches = matchesSearchPath(entry.entry, query);
           if (launchable || (includeAllFiles && entry.type === "FILE")) {
-            if (matchesSearchPath(entry.entry, query) && !resultPaths.has(path) && results.length < resultLimit) {
-              resultPaths.add(path);
-              results.push({ name: entry.entry, path, type: entry.type, launchable });
-            }
-            if (results.length >= resultLimit) {
-              resultLimitReached = true;
-              break;
-            }
+            if (matches) addResult({ name: entry.entry, path, type: entry.type, launchable });
           } else if (entry.type === "DIRECTORY") {
+            // Подходящая по имени папка — тоже результат (например, папка игры), а внутрь неё поиск всё равно заходит.
+            if (includeFolders && matches) addResult({ name: entry.entry, path, type: "DIRECTORY", launchable: false });
             queue.push(path);
           }
         }
@@ -102,7 +108,7 @@
       }
     }
     const cancelled = shouldCancel();
-    results.sort((left, right) => Number(right.launchable) - Number(left.launchable)
+    results.sort((left, right) => resultRank(left) - resultRank(right)
       || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: "base" })
       || left.path.localeCompare(right.path));
 
@@ -111,6 +117,7 @@
       directoriesScanned,
       readErrors,
       truncated: !cancelled && (directoryLimitReached || resultLimitReached || queue.length > 0),
+      resultLimitReached,
       cancelled
     };
   }

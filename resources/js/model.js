@@ -17,7 +17,7 @@
   function normalizeItem(item) {
     const path = String(item.path || "").trim();
     const coverPath = String(item.coverPath || "").trim();
-    const supportedCoverSources = new Set(["file", "url", "gamestory"]);
+    const supportedCoverSources = new Set(["file", "url", "gamestory", "steamgrid"]);
     const inferredCoverSource = /^https?:\/\//i.test(coverPath) ? "url" : "file";
     return {
       id: item.id || createId(),
@@ -214,6 +214,107 @@
     return folder.split(/[\\/]/).filter(Boolean).pop() || folder;
   }
 
+  // «Этот компьютер» в Windows: список дисков, куда попадаем, поднявшись выше корня диска.
+  const COMPUTER_PATH = "::computer";
+
+  function isComputerPath(path) {
+    return path === COMPUTER_PATH;
+  }
+
+  function isDriveRoot(path, osName) {
+    return osName === "Windows" && /^[A-Za-z]:[\\/]?$/.test(String(path || "").trim());
+  }
+
+  // Служебные файлы и папки Windows, которые Проводник Windows прячет (атрибут «скрытый» Neutralino не сообщает).
+  const WINDOWS_HIDDEN_NAMES = new Set([
+    "desktop.ini", "thumbs.db", "system volume information", "pagefile.sys", "hiberfil.sys", "swapfile.sys",
+    "dumpstack.log", "dumpstack.log.tmp", "config.msi", "bootmgr", "bootnxt", "msocache", "ntuser.dat"
+  ]);
+
+  // Скрытые: имена с точки (.git, .DS_Store), а в Windows ещё «$…» ($Recycle.Bin) и служебные файлы из списка выше.
+  function isHiddenEntry(name, osName) {
+    const value = String(name || "");
+    if (value.startsWith(".")) return true;
+    if (osName === "Windows") {
+      const lower = value.toLowerCase();
+      return value.startsWith("$") || WINDOWS_HIDDEN_NAMES.has(lower) || /^ntuser\.(dat|ini|pol)/.test(lower);
+    }
+    // Файл «Icon\r» хранит значок папки в macOS.
+    if (osName === "Darwin") return value === "Icon\r";
+    return false;
+  }
+
+  // Путь по частям для строки пути: [{ label, path }] от корня к текущей папке.
+  function pathCrumbs(path, osName) {
+    const value = String(path || "").trim();
+    if (!value || isComputerPath(value)) return [];
+    if (osName === "Windows") {
+      const normalized = value.replace(/\//g, "\\");
+      const unc = normalized.match(/^\\\\([^\\]+)\\([^\\]+)(.*)$/);
+      const drive = normalized.match(/^([A-Za-z]:)(.*)$/);
+      if (!unc && !drive) return [{ label: normalized, path: normalized }];
+      const rootLabel = unc ? `\\\\${unc[1]}\\${unc[2]}` : drive[1].toUpperCase();
+      const rest = unc ? unc[3] : drive[2];
+      const crumbs = [{ label: rootLabel, path: `${rootLabel}\\` }];
+      let current = rootLabel;
+      rest.split("\\").filter(Boolean).forEach((part) => {
+        current = `${current}\\${part}`;
+        crumbs.push({ label: part, path: current });
+      });
+      return crumbs;
+    }
+    const crumbs = [{ label: "/", path: "/" }];
+    let current = "";
+    value.split("/").filter(Boolean).forEach((part) => {
+      current = `${current}/${part}`;
+      crumbs.push({ label: part, path: current });
+    });
+    return crumbs;
+  }
+
+  const DRIVE_TYPE_LABELS = {
+    Fixed: "Локальный диск",
+    Removable: "Съёмный диск",
+    Network: "Сетевой диск",
+    CDRom: "CD/DVD-дисковод",
+    Ram: "RAM-диск"
+  };
+
+  // Ответ PowerShell (DriveInfo в JSON) → [{ letter: "C:", path: "C:\\", label, type, ready, total, free }].
+  function parseDrives(output) {
+    let data;
+    try {
+      data = JSON.parse(String(output || "").trim() || "[]");
+    } catch (error) {
+      return [];
+    }
+    const list = Array.isArray(data) ? data : [data];
+    return list
+      .map((drive) => {
+        const match = String(drive?.name || "").match(/^([A-Za-z]):\\?$/);
+        if (!match) return null;
+        const letter = `${match[1].toUpperCase()}:`;
+        const number = (value) => (value === null || value === undefined || value === "" ? NaN : Number(value));
+        const total = number(drive.total);
+        const free = number(drive.free);
+        return {
+          letter,
+          path: `${letter}\\`,
+          label: String(drive.label || "").trim(),
+          type: String(drive.type || ""),
+          ready: drive.ready !== false,
+          total: Number.isFinite(total) && total > 0 ? total : null,
+          free: Number.isFinite(free) && free >= 0 ? free : null
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.letter.localeCompare(right.letter));
+  }
+
+  function driveTitle(drive) {
+    return `${drive.label || DRIVE_TYPE_LABELS[drive.type] || "Диск"} (${drive.letter})`;
+  }
+
   const WINDOWS_RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
   // Возвращает текст ошибки или пустую строку, если имя подходит для файла или папки.
@@ -289,15 +390,20 @@
   }
 
   const api = {
+    COMPUTER_PATH,
     EXPLORER_SORTS,
     FAVORITE_MOVES,
     LAUNCHABLE_EXTENSIONS,
     createId,
+    driveTitle,
     extensionOf,
     favoritePosition,
     folderDisplayName,
     formatFileSize,
     isApplicationBundle,
+    isComputerPath,
+    isDriveRoot,
+    isHiddenEntry,
     isLaunchable,
     isLaunchableEntry,
     isWebUrl,
@@ -312,6 +418,8 @@
     normalizeItem,
     orderFavorites,
     parentPath,
+    parseDrives,
+    pathCrumbs,
     pinFolder,
     renamedPath,
     replacePathPrefix,

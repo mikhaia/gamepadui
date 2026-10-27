@@ -28,6 +28,9 @@ test("builds platform system commands", () => {
   assert.equal(platform.buildSystemCommand("shutdown", "Windows"), "shutdown.exe /s /t 0");
   assert.equal(platform.buildSystemCommand("sleep", "Linux"), "systemctl suspend");
   assert.equal(platform.buildSystemCommand("restart", "Unknown"), "");
+  assert.equal(platform.buildSystemCommand("logout", "Windows"), "shutdown.exe /l");
+  assert.equal(platform.buildSystemCommand("logout", "Darwin"), "osascript -e 'tell application \"loginwindow\" to «event aevtrlgo»'");
+  assert.equal(platform.buildSystemCommand("logout", "Linux"), "loginctl terminate-session \"$XDG_SESSION_ID\"");
 });
 
 test("opens documents with the default application", () => {
@@ -57,4 +60,13 @@ test("opens links in the default browser without running anything from the addre
   const script = Buffer.from(windows.split(" ").pop(), "base64").toString("utf16le");
   assert.equal(script, "Start-Process -FilePath 'https://www.youtube.com/watch?v=x&t=1'");
   assert.throws(() => platform.buildUrlCommand("javascript:alert(1)", "Darwin"));
+});
+
+test("lists Windows drives with PowerShell DriveInfo", () => {
+  const command = platform.buildDriveListCommand("Windows");
+  assert.match(command, /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand /);
+  const script = Buffer.from(command.split(" ").pop(), "base64").toString("utf16le");
+  assert.match(script, /\[System\.IO\.DriveInfo\]::GetDrives\(\)/);
+  assert.match(script, /ConvertTo-Json -InputObject @\(\$drives\) -Compress/);
+  assert.equal(platform.buildDriveListCommand("Darwin"), "");
 });

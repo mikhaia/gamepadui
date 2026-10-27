@@ -136,23 +136,45 @@
       Windows: {
         sleep: "rundll32.exe powrprof.dll,SetSuspendState 0,1,0",
         restart: "shutdown.exe /r /t 0",
-        shutdown: "shutdown.exe /s /t 0"
+        shutdown: "shutdown.exe /s /t 0",
+        logout: "shutdown.exe /l"
       },
       Linux: {
         sleep: "systemctl suspend",
         restart: "systemctl reboot",
-        shutdown: "systemctl poweroff"
+        shutdown: "systemctl poweroff",
+        logout: "loginctl terminate-session \"$XDG_SESSION_ID\""
       },
       Darwin: {
         sleep: "pmset sleepnow",
         restart: "osascript -e 'tell application \"System Events\" to restart'",
-        shutdown: "osascript -e 'tell application \"System Events\" to shut down'"
+        shutdown: "osascript -e 'tell application \"System Events\" to shut down'",
+        // «log out» через System Events показывает системное окно с отсчётом, которым геймпадом не управлять;
+        // событие loginwindow «aevtrlgo» завершает сеанс сразу (подтверждение уже было в лаунчере).
+        logout: "osascript -e 'tell application \"loginwindow\" to «event aevtrlgo»'"
       }
     };
     return commands[osName]?.[action] || "";
   }
 
+  // Список дисков Windows: буква, метка, тип, готовность, объём и свободное место — одним JSON-массивом.
+  function buildDriveListCommand(osName) {
+    if (osName !== "Windows") return "";
+    const script = [
+      "[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false",
+      "$drives = foreach ($d in [System.IO.DriveInfo]::GetDrives()) {",
+      "  $ready = $false; $label = ''; $total = $null; $free = $null",
+      "  try { $ready = $d.IsReady } catch {}",
+      "  if ($ready) { try { $label = $d.VolumeLabel; $total = $d.TotalSize; $free = $d.AvailableFreeSpace } catch {} }",
+      "  [pscustomobject]@{ name = $d.Name; type = [string]$d.DriveType; ready = $ready; label = $label; total = $total; free = $free }",
+      "}",
+      "ConvertTo-Json -InputObject @($drives) -Compress"
+    ].join("\n");
+    return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encodePowerShell(script)}`;
+  }
+
   const api = {
+    buildDriveListCommand,
     buildLaunchCommand,
     buildOpenCommand,
     buildRevealCommand,

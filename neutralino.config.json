@@ -31,7 +31,8 @@
     "filesystem.getJoinedPath",
     "filesystem.getPathParts",
     "filesystem.getStats",
-    "filesystem.move"
+    "filesystem.move",
+    "filesystem.remove"
   ],
   "modes": {
     "window": {
